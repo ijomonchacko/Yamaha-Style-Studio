@@ -36,12 +36,15 @@ export function ExportPanel({ ready, disabled, result, onCompile, onDownload, er
         {result && (
           <div className="space-y-3 anim-in">
             <div className="alert-ok">
-              Style compiled successfully. Copy the file to USB and load it under
+              Style compiled and validated. Copy the file to USB and load it under
               Style → User / Expansion on your keyboard.
+              {result.casmSource === "generated" && (
+                <> CASM was generated (AUS had no valid CASM) — if the keyboard rejects it, re-export the .aus from Audio Phraser with CASM intact.</>
+              )}
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               <Stat label="SMF" value={fmt(result.smfSize)} />
-              <Stat label="CASM" value={fmt(result.casmSize)} />
+              <Stat label="CASM" value={`${fmt(result.casmSize)}${result.casmSource === "aus" ? " · AUS" : " · gen"}`} />
               <Stat label="Audio" value={fmt(result.audioSize)} />
               <Stat label="Total" value={fmt(result.styBytes.length)} accent />
             </div>

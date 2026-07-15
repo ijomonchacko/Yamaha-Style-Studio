@@ -4,13 +4,15 @@
  * Real Audio Phraser .aus / .sty files use:
  *   - Sdec with comma-separated section names (not null-separated)
  *   - Ctb2 (47-byte) channel tables for SFF2, not the old 16-byte Ctab
- *   - AASM audio assembly block (lifted from .aus)
+ *   - AASM audio assembly block (lifted from the .aus)
  *
  * Incorrect CASM layout is a common cause of keyboard
  * "Data not loaded properly" errors.
  */
 
-import { Bytes, concat, tag, writeU16BE, writeU32BE } from "./bytes";
+import {
+  Bytes, concat, readFourCC, readU16BE, readU32BE, tag, writeU16BE, writeU32BE
+} from "./bytes";
 
 export type StyleSection =
   | "Main A" | "Main B" | "Main C" | "Main D"
@@ -84,6 +86,97 @@ export const FULL_SECTION_LIST: StyleSection[] = [
   "Ending A", "Ending B", "Ending C",
   "Break"
 ];
+
+/** Known top-level style chunks after the SMF block. */
+const STYLE_TOP_TAGS = new Set([
+  "CASM", "OTSc", "MDB ", "AASM", "AWav", "AUDI", "FNRc", "MTRK", "CSEG"
+]);
+
+export interface StyleTopChunk {
+  id: string;
+  offset: number;
+  size: number;
+  /** Full chunk bytes: FourCC + BE size + payload. */
+  full: Bytes;
+}
+
+/**
+ * Locate the end of the SMF block (MThd + N × MTrk).
+ * Returns the byte offset of the first post-SMF chunk, or -1 if invalid.
+ */
+export function findSmfEnd(buf: Bytes): number {
+  if (buf.length < 14 || readFourCC(buf, 0) !== "MThd") return -1;
+  const headerLen = readU32BE(buf, 4);
+  if (headerLen < 6 || 8 + headerLen > buf.length) return -1;
+  const numTracks = readU16BE(buf, 10);
+  let cursor = 8 + headerLen;
+  for (let t = 0; t < numTracks && cursor + 8 <= buf.length; t++) {
+    if (readFourCC(buf, cursor) !== "MTrk") {
+      // Allow a short resync for corrupted padding between tracks.
+      const next = findFourCCOffset(buf, "MTrk", cursor);
+      if (next < 0 || next > cursor + 64) break;
+      cursor = next;
+    }
+    const trackLen = readU32BE(buf, cursor + 4);
+    if (cursor + 8 + trackLen > buf.length) return -1;
+    cursor += 8 + trackLen;
+  }
+  return cursor;
+}
+
+/**
+ * Walk top-level FourCC chunks that follow a valid SMF header.
+ * Falls back to a full-file FourCC scan when the file has no MThd.
+ */
+export function walkStyleTopChunks(buf: Bytes): StyleTopChunk[] {
+  const chunks: StyleTopChunk[] = [];
+  let off = findSmfEnd(buf);
+  if (off < 0) off = 0;
+
+  while (off + 8 <= buf.length) {
+    const id = readFourCC(buf, off);
+    const size = readU32BE(buf, off + 4);
+    if (!isPlausibleFourCC(id) || size > buf.length - (off + 8)) {
+      // Resync to next known top-level tag.
+      const next = scanNextTopTag(buf, off + 1);
+      if (next < 0) break;
+      off = next;
+      continue;
+    }
+    chunks.push({
+      id,
+      offset: off,
+      size,
+      full: buf.subarray(off, off + 8 + size)
+    });
+    off += 8 + size;
+  }
+  return chunks;
+}
+
+function isPlausibleFourCC(id: string): boolean {
+  if (id.length !== 4) return false;
+  for (let i = 0; i < 4; i++) {
+    const c = id.charCodeAt(i);
+    const ok =
+      (c >= 0x30 && c <= 0x39) ||
+      (c >= 0x41 && c <= 0x5a) ||
+      (c >= 0x61 && c <= 0x7a) ||
+      c === 0x20;
+    if (!ok) return false;
+  }
+  return true;
+}
+
+function scanNextTopTag(buf: Bytes, from: number): number {
+  const tags = ["CASM", "OTSc", "MDB ", "AASM", "AWav", "AUDI", "FNRc"];
+  let best = -1;
+  for (const t of tags) {
+    const i = findFourCCOffset(buf, t, from);
+    if (i >= 0 && (best < 0 || i < best)) best = i;
+  }
+  return best;
+}
 
 /**
  * Build a CASM chunk with SFF2 Ctb2 tables.
@@ -259,36 +352,206 @@ export function findFourCCOffset(buf: Bytes, fourCC: string, from = 0): number {
 
 /**
  * Extract a top-level RIFF-style chunk (FourCC + BE size + payload) as full bytes.
+ * Prefer post-SMF top-level walk so MIDI body false-positives are ignored.
  */
 export function extractChunk(buf: Bytes, fourCC: string): Bytes | null {
-  const off = findFourCCOffset(buf, fourCC);
-  if (off < 0 || off + 8 > buf.length) return null;
-  const size = ((buf[off + 4] << 24) | (buf[off + 5] << 16) | (buf[off + 6] << 8) | buf[off + 7]) >>> 0;
-  if (size > buf.length - (off + 8)) return null;
-  return buf.subarray(off, off + 8 + size);
-}
+  const top = walkStyleTopChunks(buf).find(c => c.id === fourCC);
+  if (top) return top.full;
 
-/**
- * Audio body for SFF2 styles: everything from AASM (preferred) or AWav to EOF.
- * This is what keyboards require — not only AUDI/MInt/SPCC slices.
- */
-export function extractAudioBody(ausRaw: Bytes): { body: Bytes; source: string } | null {
-  const aasm = findFourCCOffset(ausRaw, "AASM");
-  if (aasm >= 0) {
-    return { body: ausRaw.subarray(aasm), source: "AASM→EOF" };
-  }
-  const awav = findFourCCOffset(ausRaw, "AWav");
-  if (awav >= 0) {
-    return { body: ausRaw.subarray(awav), source: "AWav→EOF" };
-  }
-  const audi = findFourCCOffset(ausRaw, "AUDI");
-  if (audi >= 0) {
-    return { body: ausRaw.subarray(audi), source: "AUDI→EOF" };
+  // Fallback: first structurally valid occurrence (size must fit).
+  let from = 0;
+  while (from < buf.length) {
+    const off = findFourCCOffset(buf, fourCC, from);
+    if (off < 0 || off + 8 > buf.length) return null;
+    const size = readU32BE(buf, off + 4);
+    if (size > 0 && size <= buf.length - (off + 8) && size < buf.length) {
+      return buf.subarray(off, off + 8 + size);
+    }
+    from = off + 1;
   }
   return null;
 }
 
-/** Prefer a proven CASM block embedded in the source .aus. */
-export function extractCasmFromAus(ausRaw: Bytes): Bytes | null {
-  return extractChunk(ausRaw, "CASM");
+/**
+ * Validate a CASM block has at least one CSEG with Sdec + channel table.
+ */
+export function isValidCasm(casm: Bytes): boolean {
+  if (casm.length < 16) return false;
+  if (readFourCC(casm, 0) !== "CASM") return false;
+  const size = readU32BE(casm, 4);
+  if (size + 8 !== casm.length && size + 8 > casm.length) return false;
+  const end = Math.min(casm.length, 8 + size);
+  let p = 8;
+  let hasCseg = false;
+  let hasSdec = false;
+  let hasTable = false;
+  while (p + 8 <= end) {
+    const id = readFourCC(casm, p);
+    const sz = readU32BE(casm, p + 4);
+    if (sz > end - (p + 8)) break;
+    if (id === "CSEG") {
+      hasCseg = true;
+      let q = p + 8;
+      const qend = p + 8 + sz;
+      while (q + 8 <= qend) {
+        const nid = readFourCC(casm, q);
+        const nsz = readU32BE(casm, q + 4);
+        if (nsz > qend - (q + 8)) break;
+        if (nid === "Sdec" && nsz > 0) hasSdec = true;
+        if ((nid === "Ctb2" || nid === "Ctab") && nsz >= 16) hasTable = true;
+        q += 8 + nsz;
+      }
+    }
+    p += 8 + sz;
+  }
+  return hasCseg && hasSdec && hasTable;
 }
+
+/**
+ * Audio body for SFF2 styles: everything from AASM (preferred) or AWav to EOF.
+ * Uses post-SMF top-level walk so MIDI false positives are ignored.
+ */
+export function extractAudioBody(ausRaw: Bytes): { body: Bytes; source: string } | null {
+  const tops = walkStyleTopChunks(ausRaw);
+  for (const prefer of ["AASM", "AWav", "AUDI"] as const) {
+    const hit = tops.find(c => c.id === prefer);
+    if (hit) {
+      // Take from this chunk through EOF — real styles keep trailing AInf etc.
+      return { body: ausRaw.subarray(hit.offset), source: `${prefer}→EOF` };
+    }
+  }
+
+  // Fallback substring search with size sanity (legacy / partial containers).
+  for (const prefer of ["AASM", "AWav", "AUDI"] as const) {
+    const off = findFourCCOffset(ausRaw, prefer);
+    if (off >= 0 && off + 8 <= ausRaw.length) {
+      return { body: ausRaw.subarray(off), source: `${prefer}→EOF (scan)` };
+    }
+  }
+  return null;
+}
+
+/**
+ * Prefer a proven CASM block embedded in the source .aus (post-SMF only).
+ */
+export function extractCasmFromAus(ausRaw: Bytes): Bytes | null {
+  const tops = walkStyleTopChunks(ausRaw);
+  const casm = tops.find(c => c.id === "CASM");
+  if (casm && isValidCasm(casm.full)) return casm.full;
+
+  // Fallback: first valid CASM in the whole buffer (skips MIDI false hits).
+  let from = 0;
+  while (from < ausRaw.length) {
+    const off = findFourCCOffset(ausRaw, "CASM", from);
+    if (off < 0) return null;
+    const size = readU32BE(ausRaw, off + 4);
+    if (size > 0 && size <= ausRaw.length - (off + 8)) {
+      const full = ausRaw.subarray(off, off + 8 + size);
+      if (isValidCasm(full)) return full;
+    }
+    from = off + 1;
+  }
+  return null;
+}
+
+/**
+ * Structural validation of a compiled .sty before download.
+ * Catches the classic keyboard "Data not loaded properly" failure modes.
+ */
+export interface StyleValidation {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  hasSff2: boolean;
+  hasSInt: boolean;
+  hasCasm: boolean;
+  hasAudio: boolean;
+  casmSourceHint?: string;
+}
+
+export function validateStyleBytes(sty: Bytes): StyleValidation {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (sty.length < 64) {
+    errors.push("Style file is too small to be valid.");
+    return { ok: false, errors, warnings, hasSff2: false, hasSInt: false, hasCasm: false, hasAudio: false };
+  }
+
+  if (readFourCC(sty, 0) !== "MThd") {
+    errors.push("Missing MThd header — keyboard will reject this file.");
+  }
+
+  const smfEnd = findSmfEnd(sty);
+  if (smfEnd < 0) {
+    errors.push("Could not parse SMF track block (MThd/MTrk).");
+  }
+
+  // Scan conductor / SMF region for required markers.
+  const smfRegion = sty.subarray(0, smfEnd > 0 ? smfEnd : Math.min(sty.length, 65536));
+  const hasSff2 = containsAscii(smfRegion, "SFF2") || containsAscii(smfRegion, "SFF1");
+  const hasSInt = containsAscii(smfRegion, "SInt");
+  if (!hasSff2) errors.push('Missing required marker "SFF2" (or SFF1) in conductor track.');
+  if (!hasSInt) errors.push('Missing required marker "SInt" in conductor track.');
+
+  const tops = walkStyleTopChunks(sty);
+  const casmChunk = tops.find(c => c.id === "CASM");
+  const hasCasm = !!casmChunk && isValidCasm(casmChunk.full);
+  if (!casmChunk) {
+    errors.push("Missing CASM chunk after SMF — keyboard will show “Data not loaded properly”.");
+  } else if (!hasCasm) {
+    errors.push("CASM chunk is present but malformed (need CSEG → Sdec + Ctb2/Ctab).");
+  }
+
+  const audioChunk = tops.find(c => c.id === "AASM" || c.id === "AWav" || c.id === "AUDI");
+  const hasAudio = !!audioChunk && audioChunk.full.length >= 32;
+  if (!hasAudio) {
+    // Also accept AASM→EOF body even if size field is odd.
+    const body = extractAudioBody(sty);
+    if (!body || body.body.length < 32) {
+      errors.push("Missing AASM/AWav/AUDI audio body — keyboard will reject the style.");
+    }
+  }
+
+  // Order check: CASM should appear before audio.
+  if (casmChunk && audioChunk && casmChunk.offset > audioChunk.offset) {
+    errors.push("Invalid order: audio body appears before CASM.");
+  }
+
+  if (casmChunk && casmChunk.size < 40) {
+    warnings.push("CASM is unusually small; verify channel tables on keyboard.");
+  }
+  if (hasAudio && audioChunk && audioChunk.size < 64) {
+    warnings.push("Audio body is unusually small.");
+  }
+
+  // Expected structure: SMF → CASM → audio (no required OTSc for audio styles)
+  const structure = tops.map(c => c.id).join(" → ");
+  if (tops.length === 0) {
+    errors.push("No top-level style chunks found after SMF.");
+  } else {
+    warnings.push(`Top-level layout: ${structure || "(empty)"}`);
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    hasSff2,
+    hasSInt,
+    hasCasm,
+    hasAudio: hasAudio || !!extractAudioBody(sty)
+  };
+}
+
+function containsAscii(buf: Bytes, s: string): boolean {
+  const n = new TextEncoder().encode(s);
+  outer: for (let i = 0; i <= buf.length - n.length; i++) {
+    for (let j = 0; j < n.length; j++) if (buf[i + j] !== n[j]) continue outer;
+    return true;
+  }
+  return false;
+}
+
+// Silence unused warning for STYLE_TOP_TAGS in case tree-shakers care.
+void STYLE_TOP_TAGS;

@@ -532,10 +532,14 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
               <div>
                 <h3>Keyboard says “Data not loaded properly”</h3>
                 <p>
-                  Re-export a complete <code>.aus</code> from Audio Phraser (do not use partial/corrupt files).
-                  Compile again in Style Studio. Prefer lifting CASM from the AUS. Confirm USB format and
-                  that the style is loaded from User memory, not a truncated copy.
+                  The keyboard rejected the <code>.sty</code> structure. Fix checklist:
                 </p>
+                <ul>
+                  <li>Use a complete Audio Phraser <code>.aus</code> (must contain AASM/AWav audio and ideally CASM).</li>
+                  <li>Compile again in Style Studio — export now validates SFF2/SInt markers, CASM, and audio body before download.</li>
+                  <li>In the build log, prefer <strong>CASM: lifted from .aus</strong>. If it says generated, re-export the AUS from Audio Phraser with CASM intact.</li>
+                  <li>Copy the full file to USB (FAT32), load under Style → User / Expansion (not a truncated copy).</li>
+                </ul>
               </div>
               <div>
                 <h3>Drums sound muddy or full of vocals</h3>

@@ -98,6 +98,7 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
     const file = files.find(f => f.name.toLowerCase().endsWith(".aus")) ?? files[0];
     if (!file) return;
     setError(null);
+    setResult(null);
     setDecodedPcm(null);
     try {
       const bytes = await fileToBytes(file);
@@ -114,6 +115,17 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
         timeSigNum: parsed.meta.timeSigNum,
         timeSigDen: parsed.meta.timeSigDen
       }));
+
+      const hasAudio =
+        parsed.audioChunks.some(c =>
+          c.id === "AASM" || c.id === "AWav" || c.id === "AUDI" || c.id === "Adat"
+        ) || !!parsed.audio;
+      if (!hasAudio) {
+        setError(
+          "AUS loaded but no AASM/AWav/AUDI/Adat audio body was found. " +
+          "Keyboard export will fail with “Data not loaded properly”. Re-export from Audio Phraser."
+        );
+      }
     } catch (e) {
       setError(`Failed to parse .aus: ${(e as Error).message}`);
     }
@@ -491,21 +503,43 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
   const canCompile = !!ausParsed && assignedTracks.length > 0;
   const compile = () => {
     setError(null);
+    setResult(null);
     if (!ausParsed) { setError("Please upload an .aus file first."); return; }
     if (assignedTracks.length === 0) { setError("Assign at least one MIDI track to a style channel."); return; }
+
+    // Preflight: AUS must expose a real audio body or the keyboard rejects the .sty.
+    const hasAudioChunk =
+      ausParsed.audioChunks.some(c => c.id === "AASM" || c.id === "AWav" || c.id === "AUDI" || c.id === "Adat") ||
+      !!ausParsed.audio;
+    if (!hasAudioChunk) {
+      setError(
+        "AUS has no AASM/AWav/AUDI/Adat audio body — keyboard would show “Data not loaded properly”. " +
+        "Re-export the .aus from Audio Phraser and try again."
+      );
+      return;
+    }
+
     try {
+      const tpq = midis[0]?.parsed.ticksPerQuarter ?? 480;
+      const bars = Math.max(1, ausParsed.meta.bars || 4);
       const built = buildStyle({
-        name: meta.name,
+        name: meta.name || "AudioStyle",
         category: meta.category,
         bpm: meta.bpm,
         timeSigNum: meta.timeSigNum,
         timeSigDen: meta.timeSigDen,
         sections: meta.sections.length ? meta.sections : ["Main A"],
-        ticksPerQuarter: midis[0]?.parsed.ticksPerQuarter ?? 480,
+        ticksPerQuarter: tpq,
+        sectionBars: bars,
         aus: ausParsed,
-        tracks: assignedTracks
+        tracks: assignedTracks,
+        preferAusCasm: true
       });
       setResult(built);
+      if (built.casmSource === "generated") {
+        // Soft warning only — generated CASM can still load, but AUS CASM is safer.
+        setError(null);
+      }
     } catch (e) {
       setError(`Compile failed: ${(e as Error).message}`);
     }
