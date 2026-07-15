@@ -1,110 +1,125 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const VIDEO_URL =
   "https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260329_050842_be71947f-f16e-4a14-810c-06e83d23ddb5.mp4";
 
 /**
- * Fixed full-screen looping video.
- * No opacity fades after load (fade-to-0 was causing pale flash on scroll/loop).
- * Video stays at opacity 1 with a dark underlay as fallback.
+ * Full-screen looping hero video.
+ * Aggressive muted autoplay + retries so the clip starts on first paint.
  */
 export function VideoBackground() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     const video = videoRef.current;
-    const wrap = wrapRef.current;
-    if (!video || !wrap) return;
+    if (!video) return;
 
-    // Always fully visible once mounted — never animate opacity down
-    wrap.style.opacity = "1";
+    let disposed = false;
+    let tries = 0;
+    let retryTimer = 0;
 
+    // Critical for autoplay policies
     video.muted = true;
     video.defaultMuted = true;
+    video.volume = 0;
     video.playsInline = true;
     video.loop = true;
     video.preload = "auto";
+    video.setAttribute("muted", "");
     video.setAttribute("playsinline", "");
     video.setAttribute("webkit-playsinline", "");
+    video.setAttribute("autoplay", "");
 
-    let disposed = false;
-
-    const ensurePlaying = () => {
-      if (disposed) return;
-      wrap.style.opacity = "1";
-      if (video.paused) {
-        void video.play().catch(() => { /* autoplay may need gesture */ });
+    const tryPlay = async () => {
+      if (disposed || !video) return;
+      try {
+        video.muted = true;
+        const p = video.play();
+        if (p !== undefined) await p;
+        if (!disposed) {
+          setReady(true);
+          setFailed(false);
+        }
+      } catch {
+        // Retry a few times (network / policy)
+        if (disposed) return;
+        tries += 1;
+        if (tries < 8) {
+          retryTimer = window.setTimeout(() => void tryPlay(), 350 * tries);
+        } else {
+          setFailed(true);
+        }
       }
     };
 
-    // Keep seamless loop without blank frames
-    const onTimeUpdate = () => {
-      // If decoder stalls near end, soft-seek slightly early
-      if (!Number.isFinite(video.duration) || video.duration <= 0) return;
-      if (video.duration - video.currentTime < 0.08 && video.currentTime > 0.2) {
-        // Let native loop handle it; just force opacity
-        wrap.style.opacity = "1";
-      }
+    const onCanPlay = () => {
+      void tryPlay();
     };
-
+    const onPlaying = () => {
+      setReady(true);
+      setFailed(false);
+    };
+    const onError = () => {
+      setFailed(true);
+    };
     const onVisibility = () => {
-      if (document.visibilityState === "visible") ensurePlaying();
+      if (document.visibilityState === "visible") void tryPlay();
+    };
+    // First user gesture unlocks autoplay if blocked
+    const onPointer = () => {
+      void tryPlay();
     };
 
-    // Throttled scroll resume — do not touch opacity
-    let scrollTO = 0;
-    const onScroll = () => {
-      if (scrollTO) return;
-      scrollTO = window.setTimeout(() => {
-        scrollTO = 0;
-        if (video.paused) ensurePlaying();
-      }, 200);
-    };
-
-    video.addEventListener("loadeddata", ensurePlaying);
-    video.addEventListener("canplay", ensurePlaying);
-    video.addEventListener("playing", () => { wrap.style.opacity = "1"; });
-    video.addEventListener("timeupdate", onTimeUpdate);
+    video.addEventListener("loadeddata", onCanPlay);
+    video.addEventListener("canplay", onCanPlay);
+    video.addEventListener("canplaythrough", onCanPlay);
+    video.addEventListener("playing", onPlaying);
+    video.addEventListener("error", onError);
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onVisibility);
-    window.addEventListener("scroll", onScroll, { passive: true });
+    document.addEventListener("pointerdown", onPointer, { once: true, passive: true });
+    document.addEventListener("touchstart", onPointer, { once: true, passive: true });
 
-    // Single load
-    try {
-      video.load();
-    } catch { /* ignore */ }
-    ensurePlaying();
+    // Kick off immediately — do NOT call load() (it can cancel autoplay)
+    if (video.readyState >= 2) void tryPlay();
+    else void tryPlay();
+
+    // Fallback poll
+    retryTimer = window.setTimeout(() => void tryPlay(), 500);
 
     return () => {
       disposed = true;
-      if (scrollTO) window.clearTimeout(scrollTO);
-      video.removeEventListener("loadeddata", ensurePlaying);
-      video.removeEventListener("canplay", ensurePlaying);
-      video.removeEventListener("playing", () => { wrap.style.opacity = "1"; });
-      video.removeEventListener("timeupdate", onTimeUpdate);
+      window.clearTimeout(retryTimer);
+      video.removeEventListener("loadeddata", onCanPlay);
+      video.removeEventListener("canplay", onCanPlay);
+      video.removeEventListener("canplaythrough", onCanPlay);
+      video.removeEventListener("playing", onPlaying);
+      video.removeEventListener("error", onError);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", onVisibility);
-      window.removeEventListener("scroll", onScroll);
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("touchstart", onPointer);
     };
   }, []);
 
   return (
-    <div className="lp-video-root" aria-hidden>
+    <div className={`lp-video-root ${ready ? "is-ready" : ""} ${failed ? "is-failed" : ""}`} aria-hidden>
       <div className="lp-video-underlay" />
-      <div ref={wrapRef} className="lp-video-fade" style={{ opacity: 1 }}>
-        <video
-          ref={videoRef}
-          className="lp-video"
-          src={VIDEO_URL}
-          muted
-          playsInline
-          autoPlay
-          loop
-          preload="auto"
-          disablePictureInPicture
-        />
-      </div>
+      <video
+        ref={videoRef}
+        className="lp-video"
+        src={VIDEO_URL}
+        muted
+        autoPlay
+        loop
+        playsInline
+        preload="auto"
+        disablePictureInPicture
+      >
+        <source src={VIDEO_URL} type="video/mp4" />
+      </video>
       <div className="lp-video-scrim" />
     </div>
   );
