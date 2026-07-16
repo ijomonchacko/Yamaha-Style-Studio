@@ -1032,19 +1032,11 @@ export function MidiEditor(props: MidiEditorProps) {
             </button>
             <button
               type="button"
-              className={`midi-btn-solo btn-accent2 !py-1.5 !px-2.5 text-xs ${playing && playMode === "solo" ? "on" : ""}`}
+              className={`midi-btn-solo btn-accent2 !py-1.5 !px-2.5 text-xs ${playing && playMode === "solo" ? "on ring-1 ring-accent2/40" : ""}`}
               onClick={() => void togglePlay("solo")}
               title="This MIDI only (Shift+Space)"
             >
-              {playing && playMode === "solo" ? "Pause" : "Solo"}
-            </button>
-            <button
-              type="button"
-              className={`btn-accent2 !py-1.5 !px-2.5 text-xs ${playing && playMode === "solo" ? "ring-1 ring-accent2/40" : ""}`}
-              onClick={() => void togglePlay("solo")}
-              title="This MIDI only (Shift+Space)"
-            >
-              {playing && playMode === "solo" ? "⏸ Pause" : "▶ Solo"}
+              {playing && playMode === "solo" ? "Pause Solo" : "Solo"}
             </button>
             <div className="w-px h-6 bg-edge mx-1" />
             <button type="button" className="btn-ghost !py-1.5 !px-2.5 text-xs" onClick={handleClose}>

@@ -60,6 +60,9 @@ export class PlaybackEngine {
   private pcmGain: GainNode;
   private pcmMuted = false;
   private pcmSoloed = false;
+  /** User fader multipliers (1 = default). */
+  private userChannelGain = new Map<number, number>();
+  private userPcmGain = 1;
 
   /** programNumber → loaded Soundfont instance */
   private instruments = new Map<number, SoundfontInst>();
@@ -355,6 +358,61 @@ export class PlaybackEngine {
     this.emit();
   }
 
+  /**
+   * Seek transport to a tick position (0 … loopLength).
+   * Restarts PCM and reschedules MIDI from the new head.
+   */
+  seekTicks(tick: number) {
+    const len = Math.max(1, this.loopLengthTicks);
+    const t = ((tick % len) + len) % len;
+    const wasPlaying = this.state.playing;
+    if (wasPlaying) {
+      // Soft restart at new position without full stop UI flash
+      this.releaseAllNotes(this.ctx.currentTime + 0.005);
+      if (this.pcmSource) {
+        try { this.pcmSource.stop(); } catch { /* */ }
+        this.pcmSource = null;
+      }
+      const posSec = this.ticksToSec(t);
+      this.loopStartCtxTime = this.ctx.currentTime + 0.05 - posSec;
+      this.schedulePass = 0;
+      this.pendingLoopDuckPass = -1;
+      this.eventCursor = this.tracks.map(tr => {
+        let i = 0;
+        while (i < tr.events.length && tr.events[i].tick < t) i++;
+        return i;
+      });
+      this.resetMidiBusGain();
+      if (this.pcm) this.startPcmSource(this.ctx.currentTime + 0.05, posSec);
+      this.state.positionTicks = t;
+      this.state.positionSec = posSec;
+      this.emit();
+      return;
+    }
+    this.state.positionTicks = t;
+    this.state.positionSec = this.ticksToSec(t);
+    this.emit();
+  }
+
+  /** User volume 0–1 for a style MIDI channel (multiplies base CHANNEL_GAIN). */
+  setChannelUserGain(midiChannel: number, gain01: number) {
+    const g = this.channelGains.get(midiChannel);
+    if (!g) return;
+    const base = CHANNEL_GAIN[midiChannel] ?? 0.6;
+    const user = Math.max(0, Math.min(1.5, gain01));
+    this.userChannelGain.set(midiChannel, user);
+    if (!this.isolation && !this.muted.has(midiChannel)) {
+      const anySolo = this.pcmSoloed || this.soloed.size > 0;
+      const chActive = !anySolo || this.soloed.has(midiChannel);
+      if (chActive) g.gain.setTargetAtTime(base * user, this.ctx.currentTime, 0.02);
+    }
+  }
+
+  setPcmUserGain(gain01: number) {
+    this.userPcmGain = Math.max(0, Math.min(1.5, gain01));
+    this.recomputeGains();
+  }
+
   setChannelMute(midiChannel: number, muted: boolean) {
     if (muted) this.muted.add(midiChannel); else this.muted.delete(midiChannel);
     this.recomputeGains();
@@ -384,21 +442,24 @@ export class PlaybackEngine {
   }
 
   private recomputeGains() {
+    const pcmBase = 0.9 * this.userPcmGain;
     if (this.isolation) {
       const iso = this.isolation;
-      this.pcmGain.gain.setTargetAtTime(iso.pcm ? 0.9 : 0, this.ctx.currentTime, 0.02);
+      this.pcmGain.gain.setTargetAtTime(iso.pcm ? pcmBase : 0, this.ctx.currentTime, 0.02);
       for (const [ch, gain] of this.channelGains) {
         const on = ch === iso.channel;
-        gain.gain.setTargetAtTime(on ? (CHANNEL_GAIN[ch] ?? 0.6) : 0, this.ctx.currentTime, 0.02);
+        const base = (CHANNEL_GAIN[ch] ?? 0.6) * (this.userChannelGain.get(ch) ?? 1);
+        gain.gain.setTargetAtTime(on ? base : 0, this.ctx.currentTime, 0.02);
       }
       return;
     }
     const anySolo = this.pcmSoloed || this.soloed.size > 0;
     const pcmActive = !this.pcmMuted && (!anySolo || this.pcmSoloed);
-    this.pcmGain.gain.setTargetAtTime(pcmActive ? 0.9 : 0, this.ctx.currentTime, 0.02);
+    this.pcmGain.gain.setTargetAtTime(pcmActive ? pcmBase : 0, this.ctx.currentTime, 0.02);
     for (const [ch, gain] of this.channelGains) {
       const chActive = !this.muted.has(ch) && (!anySolo || this.soloed.has(ch));
-      gain.gain.setTargetAtTime(chActive ? (CHANNEL_GAIN[ch] ?? 0.6) : 0, this.ctx.currentTime, 0.02);
+      const base = (CHANNEL_GAIN[ch] ?? 0.6) * (this.userChannelGain.get(ch) ?? 1);
+      gain.gain.setTargetAtTime(chActive ? base : 0, this.ctx.currentTime, 0.02);
     }
   }
 

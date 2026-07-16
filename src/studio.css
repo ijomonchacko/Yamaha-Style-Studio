@@ -646,13 +646,30 @@
   padding: 6px 10px;
   border-radius: 7px;
   margin-bottom: 2px;
-  cursor: default;
+  cursor: pointer;
   font-family: Inter, sans-serif;
 }
 .daw-sec.on {
   background: rgba(62, 207, 255, 0.15);
   color: #7ddfff;
   font-weight: 600;
+}
+.daw-sec.has {
+  box-shadow: inset 2px 0 0 rgba(62, 207, 255, 0.55);
+}
+.daw-fader {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.45);
+}
+.daw-fader input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  height: 3px;
+  accent-color: #3ecfff;
 }
 
 .daw-center {

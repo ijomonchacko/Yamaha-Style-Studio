@@ -3,6 +3,7 @@ import { LoadedMidi, STYLE_CHANNELS, StyleRole } from "./ChannelMatrix";
 import { PianoRollStrip } from "./PianoRollStrip";
 import { MidiEditor } from "./MidiEditor";
 import { Waveform } from "./Waveform";
+import { SpectrumMeter } from "./SpectrumMeter";
 import { AudioSlice, AusMetadata } from "../lib/binary/ausParser";
 import { PlaybackEngine, TransportState } from "../lib/audio/PlaybackEngine";
 import { MidiEvent } from "../lib/binary/midiParser";
@@ -19,6 +20,7 @@ import {
   soundsByCategory,
   StyleSound
 } from "../lib/audio/gmPrograms";
+import { StyleSection } from "../lib/binary/sff2Writer";
 
 export interface KeySnapState {
   root: RootName;
@@ -39,6 +41,9 @@ interface Props {
     mute: boolean;
     solo: boolean;
     soundId: string;
+    volume?: number;
+    pan?: number;
+    section?: StyleSection;
   }[];
   loopLengthTicks: number;
   loopBars: number;
@@ -62,6 +67,20 @@ interface Props {
   onSnapAllToKey: () => void;
   onSoundChange: (role: StyleRole, soundId: string) => void;
   projectName?: string;
+  timeSigNum?: number;
+  timeSigDen?: number;
+  projectBpm?: number;
+  onBpmChange?: (bpm: number) => void;
+  activeSection?: string;
+  onSectionSelect?: (section: string) => void;
+  onSeekRatio?: (ratio: number) => void;
+  onVolumeChange?: (role: StyleRole, vol01: number) => void;
+  onPanChange?: (role: StyleRole, pan01: number) => void;
+  onRoleSectionChange?: (role: StyleRole, section: StyleSection) => void;
+  onQuantizeRole?: (role: StyleRole) => void;
+  onSwingRole?: (role: StyleRole) => void;
+  onHumanizeRole?: (role: StyleRole) => void;
+  enabledSections?: StyleSection[];
 }
 
 const SECTIONS = [
@@ -70,6 +89,11 @@ const SECTIONS = [
   "Fill In", "Break",
   "Ending A", "Ending B", "Ending C"
 ];
+
+const SECTION_EXPORT: Record<string, StyleSection> = {
+  "Fill In": "Fill In AA",
+  "Break": "Break"
+};
 
 /** DAW-style live preview matching the landing page product mockup. */
 export function LivePreview(props: Props) {
@@ -80,13 +104,21 @@ export function LivePreview(props: Props) {
   });
   const [selected, setSelected] = useState<Partial<Record<StyleRole, number | null>>>({});
   const [editorRole, setEditorRole] = useState<StyleRole | null>(null);
-  const [activeSection, setActiveSection] = useState("Main A");
+  const activeSection = props.activeSection ?? "Main A";
+  const setActiveSection = (s: string) => props.onSectionSelect?.(s);
 
   useEffect(() => {
     if (!props.engine) return;
     props.engine.onTick = setState;
     return () => { if (props.engine) props.engine.onTick = undefined; };
   }, [props.engine]);
+
+  // Keep transport BPM in sync with project meta when parent changes it
+  useEffect(() => {
+    if (props.projectBpm != null && props.engine && Math.abs(props.engine.state.bpm - props.projectBpm) > 0.5) {
+      props.engine.setBpm(props.projectBpm);
+    }
+  }, [props.projectBpm, props.engine]);
 
   const editorPicker = editorRole
     ? props.rolePickers.find(r => r.role === editorRole)
@@ -174,7 +206,7 @@ export function LivePreview(props: Props) {
         </label>
 
         <span className="daw-chip soft" style={{ fontFamily: "JetBrains Mono, monospace" }}>
-          ♩ {state.bpm} · 4/4
+          ♩ {state.bpm} · {props.timeSigNum ?? 4}/{props.timeSigDen ?? 4}
         </span>
 
         <div className="daw-tempo">
@@ -184,7 +216,11 @@ export function LivePreview(props: Props) {
             min={40}
             max={240}
             value={state.bpm}
-            onChange={(e) => props.engine?.setBpm(+e.target.value)}
+            onChange={(e) => {
+              const bpm = +e.target.value;
+              props.engine?.setBpm(bpm);
+              props.onBpmChange?.(bpm);
+            }}
             disabled={!props.engine}
           />
           <span className="bpm">{state.bpm}</span>
@@ -195,18 +231,25 @@ export function LivePreview(props: Props) {
         {/* Section rail */}
         <aside className="daw-rail">
           <div className="daw-rail-label">Sections</div>
-          {SECTIONS.map(s => (
-            <div
-              key={s}
-              className={`daw-sec ${activeSection === s ? "on" : ""}`}
-              onClick={() => setActiveSection(s)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => { if (e.key === "Enter") setActiveSection(s); }}
-            >
-              {s}
-            </div>
-          ))}
+          {SECTIONS.map(s => {
+            const exportName = SECTION_EXPORT[s] ?? s;
+            const enabled = props.enabledSections?.some(
+              x => x === exportName || x === s || (s === "Fill In" && String(x).startsWith("Fill In"))
+            );
+            return (
+              <div
+                key={s}
+                className={`daw-sec ${activeSection === s ? "on" : ""} ${enabled ? "has" : ""}`}
+                onClick={() => setActiveSection(s)}
+                role="button"
+                tabIndex={0}
+                title={enabled ? "Included in export" : "Click to focus / add to export set"}
+                onKeyDown={(e) => { if (e.key === "Enter") setActiveSection(s); }}
+              >
+                {s}
+              </div>
+            );
+          })}
         </aside>
 
         <div className="daw-center">
@@ -276,20 +319,33 @@ export function LivePreview(props: Props) {
               droppable={false}
               onDrop={() => {}}
             >
-              <Waveform
-                pcm={props.decodedPcm?.pcm ?? null}
-                channels={props.decodedPcm?.channels ?? 1}
-                playhead={playhead}
-                playing={state.playing}
-                bars={bars}
-                height={56}
-                color="#3ecfff"
-              />
+              <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 4 }}>
+                <Waveform
+                  pcm={props.decodedPcm?.pcm ?? null}
+                  channels={props.decodedPcm?.channels ?? 1}
+                  playhead={playhead}
+                  playing={state.playing}
+                  bars={bars}
+                  height={48}
+                  color="#3ecfff"
+                  onSeek={props.onSeekRatio}
+                />
+                <SpectrumMeter
+                  level={state.playing && props.decodedPcm ? 0.55 + playhead * 0.2 : 0.15}
+                  color="#3ecfff"
+                  height={18}
+                />
+              </div>
             </DawTrack>
 
             {props.rolePickers.map(rp => {
               const sound = findSound(rp.soundId);
               const step = Math.max(1, props.snapTicks);
+              const sectionMismatch =
+                rp.section &&
+                activeSection &&
+                rp.section !== (SECTION_EXPORT[activeSection] ?? activeSection) &&
+                !(activeSection === "Fill In" && String(rp.section).startsWith("Fill In"));
               return (
                 <DawTrack
                   key={rp.role}
@@ -315,6 +371,18 @@ export function LivePreview(props: Props) {
                     ? () => props.onShiftRoleTiming(rp.role, step)
                     : undefined}
                   onEdit={rp.midi ? () => setEditorRole(rp.role) : undefined}
+                  onQuantize={rp.midi && props.onQuantizeRole ? () => props.onQuantizeRole!(rp.role) : undefined}
+                  onSwing={rp.midi && props.onSwingRole ? () => props.onSwingRole!(rp.role) : undefined}
+                  onHumanize={rp.midi && props.onHumanizeRole ? () => props.onHumanizeRole!(rp.role) : undefined}
+                  volume={rp.volume ?? 1}
+                  pan={rp.pan ?? 0.5}
+                  onVolume={props.onVolumeChange ? (v) => props.onVolumeChange!(rp.role, v) : undefined}
+                  onPan={props.onPanChange ? (v) => props.onPanChange!(rp.role, v) : undefined}
+                  section={rp.section}
+                  onSection={props.onRoleSectionChange
+                    ? (sec) => props.onRoleSectionChange!(rp.role, sec)
+                    : undefined}
+                  dimmed={!!sectionMismatch}
                   droppable
                   active={!!rp.midi}
                   hint={rp.midi?.name}
@@ -405,6 +473,7 @@ interface DawTrackProps {
   mute: boolean;
   solo: boolean;
   droppable: boolean;
+  dimmed?: boolean;
   onMute: () => void;
   onSolo: () => void;
   onDrop: (files: File[]) => void;
@@ -414,11 +483,25 @@ interface DawTrackProps {
   onShiftEarlier?: () => void;
   onShiftLater?: () => void;
   onEdit?: () => void;
+  onQuantize?: () => void;
+  onSwing?: () => void;
+  onHumanize?: () => void;
+  volume?: number;
+  pan?: number;
+  onVolume?: (v: number) => void;
+  onPan?: (v: number) => void;
+  section?: StyleSection;
+  onSection?: (s: StyleSection) => void;
   sound?: StyleSound;
   soundGroups?: { category: string; sounds: StyleSound[] }[];
   onSoundChange?: (soundId: string) => void;
   children: React.ReactNode;
 }
+
+const ROLE_SECTION_OPTS: StyleSection[] = [
+  "Main A", "Main B", "Main C", "Main D",
+  "Intro A", "Fill In AA", "Break", "Ending A"
+];
 
 function DawTrack(props: DawTrackProps) {
   const [over, setOver] = useState(false);
@@ -433,7 +516,8 @@ function DawTrack(props: DawTrackProps) {
 
   return (
     <div
-      className={`daw-track ${over ? "over" : ""} ${props.active ? "" : "empty"}`}
+      className={`daw-track ${over ? "over" : ""} ${props.active ? "" : "empty"} ${props.dimmed ? "dim" : ""}`}
+      style={props.dimmed ? { opacity: 0.45 } : undefined}
       onDragEnter={props.droppable ? (e) => { e.preventDefault(); setOver(true); } : undefined}
       onDragOver={props.droppable ? (e) => { e.preventDefault(); setOver(true); } : undefined}
       onDragLeave={props.droppable ? () => setOver(false) : undefined}
@@ -465,6 +549,42 @@ function DawTrack(props: DawTrackProps) {
               </optgroup>
             ))}
           </select>
+        )}
+        {props.onSection && (
+          <select
+            className="daw-sound"
+            value={props.section ?? "Main A"}
+            onChange={(e) => props.onSection?.(e.target.value as StyleSection)}
+            title="Export section for this lane"
+          >
+            {ROLE_SECTION_OPTS.map(s => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        )}
+        {props.onVolume && (
+          <label className="daw-fader" title="Volume">
+            <span>Vol</span>
+            <input
+              type="range"
+              min={0}
+              max={150}
+              value={Math.round((props.volume ?? 1) * 100)}
+              onChange={(e) => props.onVolume?.(+e.target.value / 100)}
+            />
+          </label>
+        )}
+        {props.onPan && (
+          <label className="daw-fader" title="Pan">
+            <span>Pan</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={Math.round((props.pan ?? 0.5) * 100)}
+              onChange={(e) => props.onPan?.(+e.target.value / 100)}
+            />
+          </label>
         )}
         {props.droppable && (
           <input
@@ -513,6 +633,15 @@ function DawTrack(props: DawTrackProps) {
         )}
         {props.onTuneKey && (
           <button type="button" className="daw-tbtn" onClick={props.onTuneKey} title="Snap to key">Key</button>
+        )}
+        {props.onQuantize && (
+          <button type="button" className="daw-tbtn" onClick={props.onQuantize} title="Quantize">Q</button>
+        )}
+        {props.onSwing && (
+          <button type="button" className="daw-tbtn" onClick={props.onSwing} title="Swing">Sw</button>
+        )}
+        {props.onHumanize && (
+          <button type="button" className="daw-tbtn" onClick={props.onHumanize} title="Humanize">Hz</button>
         )}
         {props.onShiftEarlier && (
           <button type="button" className="daw-tbtn" onClick={props.onShiftEarlier} title="Earlier">«</button>

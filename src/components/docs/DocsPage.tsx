@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { BrandLogo } from "../BrandLogo";
+import { useInView } from "../../hooks/useInView";
 import "../../docs.css";
 
 interface Props {
@@ -33,6 +34,7 @@ const TOC: TocItem[] = [
 
 export function DocsPage({ onHome, onLaunchStudio }: Props) {
   const [active, setActive] = useState<string>("overview");
+  const footerReveal = useInView<HTMLElement>();
 
   useEffect(() => {
     const ids = TOC.map(t => t.id);
@@ -57,15 +59,17 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
 
   return (
     <div className="docs-root">
-      <nav className="lp-nav">
+      <nav className="lp-nav anim-nav">
         <div className="lp-nav-inner">
-          <BrandLogo size={88} onClick={onHome} className="lp-brand" />
+          <div className="anim-nav-item">
+            <BrandLogo size={88} onClick={onHome} className="lp-brand" />
+          </div>
           <ul className="lp-menu">
-            <li><button type="button" className="lp-menu-item" onClick={onHome}>Home</button></li>
-            <li><button type="button" className="lp-menu-item" onClick={onHome}>Features</button></li>
-            <li><button type="button" className="lp-menu-item docs-nav-active">Docs</button></li>
+            <li className="anim-nav-item"><button type="button" className="lp-menu-item" onClick={onHome}>Home</button></li>
+            <li className="anim-nav-item"><button type="button" className="lp-menu-item" onClick={onHome}>Features</button></li>
+            <li className="anim-nav-item"><button type="button" className="lp-menu-item docs-nav-active">Docs</button></li>
           </ul>
-          <div className="lp-nav-actions docs-nav-actions">
+          <div className="lp-nav-actions docs-nav-actions anim-nav-item">
             <button type="button" className="docs-btn docs-btn-solid" onClick={onLaunchStudio}>Launch Studio</button>
           </div>
         </div>
@@ -94,9 +98,9 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
 
         <article className="docs-content">
           <header className="docs-hero">
-            <p className="docs-kicker">Documentation</p>
-            <h1>From song file to Yamaha Live Audio Style</h1>
-            <p className="docs-lead">
+            <p className="docs-kicker anim-page-kicker">Documentation</p>
+            <h1 className="anim-page-title">From song file to Yamaha Live Audio Style</h1>
+            <p className="docs-lead anim-page-lead">
               A complete workflow: isolate drums &amp; percussion with <strong>iZotope RX 12</strong>,
               build a Live Audio Style in <strong>Yamaha Audio Phraser</strong>, then finish MIDI parts
               and export a keyboard-ready <strong>.sty</strong> in Yamaha Style Studio.
@@ -580,9 +584,12 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
             </div>
           </section>
 
-          <footer className="docs-end">
-            <p>Ready to build?</p>
-            <div className="docs-end-actions">
+          <footer
+            ref={footerReveal.ref}
+            className={`docs-end anim-footer ${footerReveal.inView ? "is-in" : ""}`}
+          >
+            <p className="anim-footer-col">Ready to build?</p>
+            <div className="docs-end-actions anim-footer-col">
               <button type="button" className="docs-btn docs-btn-solid" onClick={onLaunchStudio}>Launch Studio</button>
               <button type="button" className="docs-btn docs-btn-ghost" onClick={onHome}>Go to Home</button>
             </div>

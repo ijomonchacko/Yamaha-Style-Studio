@@ -7,9 +7,16 @@ interface Props {
   onCompile: () => void;
   onDownload: () => void;
   error: string | null;
+  /** Soft warnings before/after compile (CASM policy, etc.). */
+  warnings?: string[];
+  requireAusCasm?: boolean;
+  onRequireAusCasmChange?: (v: boolean) => void;
 }
 
-export function ExportPanel({ ready, disabled, result, onCompile, onDownload, error }: Props) {
+export function ExportPanel({
+  ready, disabled, result, onCompile, onDownload, error, warnings = [],
+  requireAusCasm, onRequireAusCasmChange
+}: Props) {
   return (
     <div className="card h-full">
       <div className="card-h">
@@ -22,6 +29,18 @@ export function ExportPanel({ ready, disabled, result, onCompile, onDownload, er
           : <span className="pill pill-muted">Need AUS + MIDI</span>}
       </div>
       <div className="card-b space-y-4">
+        {onRequireAusCasmChange != null && (
+          <label className="flex items-center gap-2 text-xs muted cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!requireAusCasm}
+              onChange={(e) => onRequireAusCasmChange(e.target.checked)}
+              style={{ accentColor: "#3ecfff" }}
+            />
+            Require AUS CASM (safer on keyboard; uncheck to allow generated CASM)
+          </label>
+        )}
+
         <div className="flex flex-col sm:flex-row gap-2.5">
           <button className="btn-primary flex-1" onClick={onCompile} disabled={disabled}>
             <BuildGlyph /> Compile style
@@ -33,21 +52,41 @@ export function ExportPanel({ ready, disabled, result, onCompile, onDownload, er
 
         {error && <div className="alert-error">{error}</div>}
 
+        {warnings.length > 0 && !error && (
+          <div className="alert-info">
+            {warnings.map((w, i) => <div key={i}>{w}</div>)}
+          </div>
+        )}
+
         {result && (
           <div className="space-y-3 anim-in">
             <div className="alert-ok">
-              Style compiled and validated. Copy the file to USB and load it under
-              Style → User / Expansion on your keyboard.
+              Style compiled and validated. Copy to USB → Style → User / Expansion.
               {result.casmSource === "generated" && (
-                <> CASM was generated (AUS had no valid CASM) — if the keyboard rejects it, re-export the .aus from Audio Phraser with CASM intact.</>
+                <> CASM was <strong>generated</strong> — re-export AUS with CASM if the keyboard rejects the file.</>
               )}
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
               <Stat label="SMF" value={fmt(result.smfSize)} />
               <Stat label="CASM" value={`${fmt(result.casmSize)}${result.casmSource === "aus" ? " · AUS" : " · gen"}`} />
               <Stat label="Audio" value={fmt(result.audioSize)} />
+              <Stat label="MDB" value={fmt(result.mdbSize)} />
+              <Stat label="OTSc" value={fmt(result.otscSize)} />
               <Stat label="Total" value={fmt(result.styBytes.length)} accent />
             </div>
+
+            {result.validation.warnings.length > 0 && (
+              <details open>
+                <summary className="text-xs muted cursor-pointer">Preflight checks</summary>
+                <ul className="text-[11px] muted mt-2 space-y-1 pl-4 list-disc">
+                  {result.validation.ok && <li className="text-emerald-300">Structure OK (SFF2/SInt · CASM · audio)</li>}
+                  {result.validation.warnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+
             <details>
               <summary className="text-xs muted cursor-pointer hover:text-frost-200 transition list-none">
                 <span className="lane-btn">View build log</span>
@@ -63,8 +102,8 @@ export function ExportPanel({ ready, disabled, result, onCompile, onDownload, er
         {!result && !error && (
           <div className="alert-info">
             <strong className="text-cyan-soft">Workflow:</strong>{" "}
-            Drop an <span className="hex text-accent">.aus</span> → assign MIDI lanes →
-            set name/tempo → Compile → Download
+            Drop <span className="hex text-accent">.aus</span> / open <span className="hex">.sty</span> →
+            assign MIDI → set name/tempo → Compile → Download
           </div>
         )}
       </div>

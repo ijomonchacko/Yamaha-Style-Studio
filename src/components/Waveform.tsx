@@ -10,6 +10,8 @@ interface Props {
   height?: number;
   color?: string;
   playing?: boolean;
+  /** Click/scrub → ratio 0..1 along the loop. */
+  onSeek?: (ratio: number) => void;
 }
 
 /**
@@ -18,7 +20,7 @@ interface Props {
  * downsampled cheaply on every resize.
  */
 export function Waveform({
-  pcm, channels, playhead, bars = 4, height = 96, color = "#6ee7ff", playing = false
+  pcm, channels, playhead, bars = 4, height = 96, color = "#6ee7ff", playing = false, onSeek
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -93,11 +95,25 @@ export function Waveform({
     }
   }, [peaks, playhead, bars, color, playing]);
 
+  const seekFromEvent = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!onSeek) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+    onSeek(ratio);
+  };
+
   return (
     <canvas
       ref={canvasRef}
-      style={{ width: "100%", height, display: "block" }}
+      style={{ width: "100%", height, display: "block", cursor: onSeek ? "ew-resize" : "default" }}
       className="rounded-lg border border-edge bg-panel2"
+      onPointerDown={onSeek ? (e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        seekFromEvent(e);
+      } : undefined}
+      onPointerMove={onSeek ? (e) => {
+        if (e.buttons === 1) seekFromEvent(e);
+      } : undefined}
     />
   );
 }

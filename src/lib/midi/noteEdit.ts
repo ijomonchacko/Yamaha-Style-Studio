@@ -562,3 +562,94 @@ export function snapRolledToKey(
   const allowed = chordPitchClasses(root, mode, target);
   return notes.map(n => ({ ...n, note: snapMidiNote(n.note, allowed) }));
 }
+
+/** Quantize note-on/off pairs to a grid (strength 0–1 blends toward grid). */
+export function quantizeEvents(
+  events: MidiEvent[],
+  gridTicks: number,
+  strength = 1
+): MidiEvent[] {
+  const g = Math.max(1, Math.round(gridTicks));
+  const s = Math.max(0, Math.min(1, strength));
+  const notes = extractNotes(events);
+  const q = notes.map(n => {
+    const startQ = snapTick(n.start, g);
+    const endQ = Math.max(startQ + 1, snapTick(n.end, g));
+    return {
+      ...n,
+      start: Math.round(n.start + (startQ - n.start) * s),
+      end: Math.round(n.end + (endQ - n.end) * s)
+    };
+  });
+  return replaceNotes(events, q);
+}
+
+/** Apply swing: delay off-grid 8th/16th subdivisions (ratio 0–1). */
+export function applySwing(
+  events: MidiEvent[],
+  gridTicks: number,
+  amount = 0.3
+): MidiEvent[] {
+  const g = Math.max(1, Math.round(gridTicks));
+  const a = Math.max(0, Math.min(0.75, amount));
+  if (a === 0) return events;
+  const notes = extractNotes(events).map(n => {
+    const cell = Math.floor(n.start / g);
+    if (cell % 2 === 1) {
+      const delay = Math.round(g * a);
+      return { ...n, start: n.start + delay, end: n.end + delay };
+    }
+    return n;
+  });
+  return replaceNotes(events, notes);
+}
+
+/** Humanize timing ±ticks and velocity ±vel. */
+export function humanizeEvents(
+  events: MidiEvent[],
+  timingTicks = 8,
+  velocityDelta = 8
+): MidiEvent[] {
+  const notes = extractNotes(events).map(n => {
+    const jt = Math.round((Math.random() * 2 - 1) * timingTicks);
+    const jv = Math.round((Math.random() * 2 - 1) * velocityDelta);
+    return {
+      ...n,
+      start: Math.max(0, n.start + jt),
+      end: Math.max(1, n.end + jt),
+      velocity: Math.max(1, Math.min(127, n.velocity + jv))
+    };
+  });
+  return replaceNotes(events, notes);
+}
+
+/** Scale all note velocities by factor (1 = unchanged). */
+export function scaleVelocities(events: MidiEvent[], factor: number): MidiEvent[] {
+  const f = Math.max(0.1, Math.min(2, factor));
+  return events.map(e => {
+    if (e.kind === "note-on" && e.velocity > 0) {
+      return { ...e, velocity: Math.max(1, Math.min(127, Math.round(e.velocity * f))) };
+    }
+    return e;
+  });
+}
+
+/** Inject or replace CC7 / CC10 at tick 0 for a channel. */
+export function setChannelVolumePan(
+  events: MidiEvent[],
+  channel: number,
+  volume?: number,
+  pan?: number
+): MidiEvent[] {
+  const rest = events.filter(
+    e => !(e.kind === "cc" && e.channel === channel && (e.controller === 7 || e.controller === 10) && e.tick === 0)
+  );
+  const extras: MidiEvent[] = [];
+  if (volume != null) {
+    extras.push({ kind: "cc", tick: 0, channel, controller: 7, value: Math.max(0, Math.min(127, volume | 0)) });
+  }
+  if (pan != null) {
+    extras.push({ kind: "cc", tick: 0, channel, controller: 10, value: Math.max(0, Math.min(127, pan | 0)) });
+  }
+  return [...extras, ...rest].sort((a, b) => a.tick - b.tick || kindOrder(a) - kindOrder(b));
+}

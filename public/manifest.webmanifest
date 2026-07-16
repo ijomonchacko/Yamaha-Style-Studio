@@ -1,0 +1,18 @@
+{
+  "name": "Yamaha Style Studio",
+  "short_name": "Style Studio",
+  "description": "Edit Live Audio Styles and export SFF2 .sty for PSR-SX & Genos",
+  "start_url": "/studio",
+  "display": "standalone",
+  "background_color": "#0b0f17",
+  "theme_color": "#0b0f17",
+  "lang": "en",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

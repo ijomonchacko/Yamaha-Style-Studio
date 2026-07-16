@@ -11,6 +11,7 @@ import {
   UpArrowIcon,
   UploadIcon
 } from "./icons";
+import { useInView } from "../../hooks/useInView";
 import "../../community.css";
 
 interface Props {
@@ -28,6 +29,7 @@ const NAV = [
 
 export function LandingPage({ onLaunchStudio, onOpenDocs }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const footerReveal = useInView<HTMLElement>();
 
   const scrollTo = (id: string) => {
     if (id === "home") {
@@ -41,26 +43,28 @@ export function LandingPage({ onLaunchStudio, onOpenDocs }: Props) {
     <div className="lp-root">
       <VideoBackground />
 
-      <nav className="lp-nav">
+      <nav className="lp-nav anim-nav">
         <div className="lp-nav-inner">
-          <BrandLogo size={88} onClick={() => scrollTo("home")} className="lp-brand" />
+          <div className="anim-nav-item">
+            <BrandLogo size={88} onClick={() => scrollTo("home")} className="lp-brand" />
+          </div>
 
           <ul className="lp-menu">
-            {NAV.map(item => (
-              <li key={item.id}>
+            {NAV.map((item, i) => (
+              <li key={item.id} className="anim-nav-item" style={{ animationDelay: `${0.08 + i * 0.05}s` }}>
                 <button type="button" className="lp-menu-item" onClick={() => scrollTo(item.id)}>
                   {item.label}
                 </button>
               </li>
             ))}
-            <li>
+            <li className="anim-nav-item" style={{ animationDelay: "0.38s" }}>
               <button type="button" className="lp-menu-item" onClick={onOpenDocs}>
                 Docs
               </button>
             </li>
           </ul>
 
-          <div className="lp-nav-actions">
+          <div className="lp-nav-actions anim-nav-item" style={{ animationDelay: "0.42s" }}>
             <button type="button" className="lp-btn-solid" onClick={onLaunchStudio}>
               Launch Studio
             </button>
@@ -70,7 +74,7 @@ export function LandingPage({ onLaunchStudio, onOpenDocs }: Props) {
 
       <section className="lp-hero" id="home">
         <div className="lp-hero-content">
-          <div className="lp-badge">
+          <div className="lp-badge anim-fade-up">
             <span className="lp-badge-new">
               <SparkleIcon size={12} />
               NEW
@@ -79,13 +83,18 @@ export function LandingPage({ onLaunchStudio, onOpenDocs }: Props) {
           </div>
 
           <h1 className="lp-headline">
-            Create Yamaha Styles<br className="hidden sm:block" /> Without Limits
+            <span className="lp-headline-main anim-hero-line">
+              <span className="anim-hero-inner anim-hero-delay-1">Create Yamaha Styles</span>
+            </span>
+            <span className="lp-headline-script anim-hero-line">
+              <span className="anim-hero-inner anim-hero-delay-2">Without Limits.</span>
+            </span>
           </h1>
 
-          <p className="lp-subtitle">
-            Design, edit and build Yamaha PSR-SX &amp; Genos styles directly in your browser.
-            Edit Live Audio Styles (.aus), MIDI channels, intros, endings, fills, multipads and
-            export fully compatible arranger styles.
+          <p className="lp-subtitle anim-fade-up anim-fade-up-d2">
+            Design, edit and build arranger styles for PSR-SX &amp; Genos —
+            right in your browser. Shape Live Audio, MIDI parts, intros and fills,
+            then export a keyboard-ready style.
           </p>
 
           <div className="lp-editor-panel">
@@ -96,7 +105,7 @@ export function LandingPage({ onLaunchStudio, onOpenDocs }: Props) {
               </div>
               <div className="lp-editor-ai">
                 <AiSparkleIcon size={13} />
-                <span>AI Assisted Editing</span>
+                <span>SFF2 Keyboard Export</span>
               </div>
             </div>
 
@@ -182,8 +191,8 @@ export function LandingPage({ onLaunchStudio, onOpenDocs }: Props) {
                 <span>See stereo PCM from AWav / Adat with playhead sync to the style loop.</span>
               </li>
               <li>
-                <strong>Spectrum &amp; level graphs</strong>
-                <span>Animated frequency bars help you judge loop energy before export.</span>
+                <strong>Waveform scrub &amp; transport</strong>
+                <span>Click the waveform to seek; tempo stays locked to export BPM.</span>
               </li>
               <li>
                 <strong>Bar timeline</strong>
@@ -341,37 +350,40 @@ export function LandingPage({ onLaunchStudio, onOpenDocs }: Props) {
         </div>
       </section>
 
-      <footer className="lp-footer">
+      <footer
+        ref={footerReveal.ref}
+        className={`lp-footer anim-footer ${footerReveal.inView ? "is-in" : ""}`}
+      >
         <div className="lp-footer-grid">
-          <div className="lp-footer-brand">
+          <div className="lp-footer-brand anim-footer-col">
             <BrandLogo size={100} />
             <p className="lp-footer-tag">
               Browser-native style builder for Yamaha PSR-SX &amp; Genos.
               Create Live Audio Styles, edit MIDI, export SFF2 .sty — privately on your device.
             </p>
           </div>
-          <div className="lp-footer-col">
+          <div className="lp-footer-col anim-footer-col">
             <h4>Product</h4>
             <button type="button" onClick={() => scrollTo("features")}>Features</button>
             <button type="button" onClick={() => scrollTo("live-audio")}>Live Audio</button>
             <button type="button" onClick={() => scrollTo("midi")}>MIDI Editor</button>
             <button type="button" onClick={onLaunchStudio}>Launch Studio</button>
           </div>
-          <div className="lp-footer-col">
+          <div className="lp-footer-col anim-footer-col">
             <h4>Explore</h4>
             <button type="button" onClick={() => scrollTo("community")}>Community</button>
             <button type="button" onClick={onOpenDocs}>Documentation</button>
             <button type="button" onClick={onLaunchStudio}>Get Started</button>
             <button type="button" onClick={() => scrollTo("home")}>Home</button>
           </div>
-          <div className="lp-footer-col">
+          <div className="lp-footer-col anim-footer-col">
             <h4>Formats</h4>
             <span>.AUS · Live Audio Style</span>
             <span>.STY · SFF2 Style</span>
             <span>.MID · MIDI tracks</span>
           </div>
         </div>
-        <div className="lp-footer-bottom">
+        <div className="lp-footer-bottom anim-footer-col">
           <span>© {new Date().getFullYear()} Yamaha Style Studio · Independent tool · Compatible with PSR-SX &amp; Genos</span>
           <span className="hex">SFF2 · CASM · AASM</span>
         </div>

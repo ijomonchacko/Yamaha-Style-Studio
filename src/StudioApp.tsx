@@ -9,14 +9,33 @@ import { AusParseResult, parseAus } from "./lib/binary/ausParser";
 import { MidiEvent, parseMidi } from "./lib/binary/midiParser";
 import { downloadBytes, fileToBytes } from "./lib/binary/bytes";
 import { AssignedTrack, buildStyle, StyleBuildResult, styleChannelToMidi } from "./lib/binary/styleStitcher";
+import { parseSty, suggestRoleForTrack } from "./lib/binary/styReader";
+import { StyleSection } from "./lib/binary/sff2Writer";
 import { PlaybackEngine } from "./lib/audio/PlaybackEngine";
-import { duplicateEventsByAusLength, shiftEventsByTicks, snapEventsToKey } from "./lib/midi/noteEdit";
+import {
+  applySwing,
+  duplicateEventsByAusLength,
+  humanizeEvents,
+  quantizeEvents,
+  shiftEventsByTicks,
+  snapEventsToKey
+} from "./lib/midi/noteEdit";
 import {
   DEFAULT_PIANO_SOUND_ID,
   findSound,
   ROLE_DEFAULT_SOUND_ID
 } from "./lib/audio/gmPrograms";
+import {
+  autosaveProject,
+  b64ToBytes,
+  bytesToB64,
+  downloadProjectFile,
+  loadAutosave,
+  ProjectSnapshot,
+  readProjectFile
+} from "./lib/project/projectStore";
 import { BrandLogo } from "./components/BrandLogo";
+import { useInView } from "./hooks/useInView";
 import "./studio.css";
 
 interface StudioAppProps {
@@ -64,9 +83,41 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
   });
   /** Per-role GM/XG sound (default Grand Piano for every lane). */
   const [roleSounds, setRoleSounds] = useState<Partial<Record<StyleRole, string>>>({});
+  const [roleVolumes, setRoleVolumes] = useState<Partial<Record<StyleRole, number>>>({});
+  const [rolePans, setRolePans] = useState<Partial<Record<StyleRole, number>>>({});
+  const [roleSections, setRoleSections] = useState<Partial<Record<StyleRole, StyleSection>>>({});
+  const [activeSection, setActiveSection] = useState<string>("Main A");
+  const [requireAusCasm, setRequireAusCasm] = useState(false);
+  const [exportWarnings, setExportWarnings] = useState<string[]>([]);
+  const undoStack = useRef<{ midis: LoadedMidi[]; assignments: Record<number, StyleRole | "unassigned"> }[]>([]);
+  const ausBytesRef = useRef<Uint8Array | null>(null);
 
   const engineRef = useRef<PlaybackEngine | null>(null);
   const [engineTick, setEngineTick] = useState(0);
+
+  const pushUndo = useCallback(() => {
+    undoStack.current = [
+      ...undoStack.current.slice(-29),
+      {
+        midis: midis.map(m => ({
+          ...m,
+          bytes: m.bytes,
+          parsed: {
+            ...m.parsed,
+            tracks: m.parsed.tracks.map(t => ({ ...t, events: t.events.slice() }))
+          }
+        })),
+        assignments: { ...assignments }
+      }
+    ];
+  }, [midis, assignments]);
+
+  const undo = useCallback(() => {
+    const prev = undoStack.current.pop();
+    if (!prev) return;
+    setMidis(prev.midis);
+    setAssignments(prev.assignments);
+  }, []);
 
   /**
    * Create the AudioContext eagerly (on mount) so PCM and MIDI can be loaded
@@ -94,49 +145,149 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
 
   // ---- File intake ------------------------------------------------------
 
+  const applyAusBytes = useCallback((bytes: Uint8Array, name: string) => {
+    const parsed = parseAus(bytes);
+    ausBytesRef.current = bytes;
+    setAusName(name);
+    setAusParsed(parsed);
+    setMeta(m => ({
+      ...m,
+      bpm: parsed.meta.bpm,
+      timeSigNum: parsed.meta.timeSigNum,
+      timeSigDen: parsed.meta.timeSigDen
+    }));
+    engineRef.current?.setBpm(parsed.meta.bpm);
+    const hasAudio =
+      parsed.audioChunks.some(c =>
+        c.id === "AASM" || c.id === "AWav" || c.id === "AUDI" || c.id === "Adat"
+      ) || !!parsed.audio;
+    if (!hasAudio) {
+      setError(
+        "AUS loaded but no AASM/AWav/AUDI/Adat audio body was found. " +
+        "Keyboard export will fail with “Data not loaded properly”. Re-export from Audio Phraser."
+      );
+    }
+    return parsed;
+  }, []);
+
   const onAusDrop = async (files: File[]) => {
-    const file = files.find(f => f.name.toLowerCase().endsWith(".aus")) ?? files[0];
+    const file =
+      files.find(f => f.name.toLowerCase().endsWith(".aus")) ??
+      files.find(f => f.name.toLowerCase().endsWith(".sty")) ??
+      files[0];
     if (!file) return;
     setError(null);
     setResult(null);
     setDecodedPcm(null);
     try {
       const bytes = await fileToBytes(file);
-      const parsed = parseAus(bytes);
-      setAusName(file.name);
-      setAusParsed(parsed);
-
-      // Adopt the tempo + time-sig recovered from the AUS file. This overrides
-      // the default 120/4 so the waveform, bar grid, playhead and MIDI stay
-      // locked to whatever the AUS was authored at.
-      setMeta(m => ({
-        ...m,
-        bpm: parsed.meta.bpm,
-        timeSigNum: parsed.meta.timeSigNum,
-        timeSigDen: parsed.meta.timeSigDen
-      }));
-
-      const hasAudio =
-        parsed.audioChunks.some(c =>
-          c.id === "AASM" || c.id === "AWav" || c.id === "AUDI" || c.id === "Adat"
-        ) || !!parsed.audio;
-      if (!hasAudio) {
-        setError(
-          "AUS loaded but no AASM/AWav/AUDI/Adat audio body was found. " +
-          "Keyboard export will fail with “Data not loaded properly”. Re-export from Audio Phraser."
-        );
+      const lower = file.name.toLowerCase();
+      if (lower.endsWith(".sty")) {
+        await openStyBytes(bytes, file.name);
+        return;
       }
+      applyAusBytes(bytes, file.name);
     } catch (e) {
-      setError(`Failed to parse .aus: ${(e as Error).message}`);
+      setError(`Failed to parse file: ${(e as Error).message}`);
     }
   };
 
-  const parseMidiFile = async (file: File): Promise<LoadedMidi | null> => {
-    if (!file.name.toLowerCase().endsWith(".mid") && !file.name.toLowerCase().endsWith(".midi")) return null;
+  const openStyBytes = async (bytes: Uint8Array, name: string) => {
+    const opened = parseSty(bytes);
+    ausBytesRef.current = bytes;
+    setAusName(name);
+    setAusParsed(opened.aus);
+    setMeta(m => ({
+      ...m,
+      name: opened.name || m.name,
+      bpm: opened.bpm,
+      timeSigNum: opened.timeSigNum,
+      timeSigDen: opened.timeSigDen,
+      sections: opened.sections.length ? opened.sections : m.sections
+    }));
+    engineRef.current?.setBpm(opened.bpm);
+
+    // Import non-conductor tracks as MIDI sources
+    const styleTracks = opened.midi.tracks.slice(1).filter(t =>
+      t.events.some(e => e.kind === "note-on" && e.velocity > 0)
+    );
+    const loaded: LoadedMidi[] = styleTracks.slice(0, 6).map((t, i) => {
+      const smf = {
+        format: 1 as const,
+        ticksPerQuarter: opened.midi.ticksPerQuarter,
+        tracks: [t],
+        tempoBpm: opened.bpm,
+        timeSigNumerator: opened.timeSigNum,
+        timeSigDenominator: opened.timeSigDen,
+        lengthTicks: t.events[t.events.length - 1]?.tick ?? 0
+      };
+      return {
+        name: t.name || `Track ${i + 1}`,
+        bytes: new Uint8Array(0),
+        parsed: smf,
+        trackIndex: 0
+      };
+    });
+    setMidis(loaded);
+    const nextAssign: Record<number, StyleRole | "unassigned"> = {};
+    const taken = new Set<StyleRole>();
+    loaded.forEach((m, i) => {
+      const suggested = suggestRoleForTrack(i + 1, m.parsed.tracks[0]?.channelsUsed ?? []) as StyleRole;
+      const role = (!taken.has(suggested) ? suggested : STYLE_CHANNELS.map(s => s.role).find(r => !taken.has(r))) as StyleRole | undefined;
+      if (role) {
+        nextAssign[i] = role;
+        taken.add(role);
+      } else nextAssign[i] = "unassigned";
+    });
+    setAssignments(nextAssign);
+    setExportWarnings(opened.log);
+    if (!opened.hasAudio) {
+      setError("Opened .sty has no AASM/AWav audio body — re-export may fail on keyboard.");
+    } else {
+      setError(null);
+    }
+  };
+
+  /** Expand multi-track / multi-channel SMF into one LoadedMidi per noteful track. */
+  const expandMidiFile = async (file: File): Promise<LoadedMidi[]> => {
+    if (!file.name.toLowerCase().endsWith(".mid") && !file.name.toLowerCase().endsWith(".midi")) return [];
     const bytes = await fileToBytes(file);
     const parsed = parseMidi(bytes);
-    const firstNoteful = parsed.tracks.findIndex(t => t.channelsUsed.length > 0);
-    return { name: file.name, bytes, parsed, trackIndex: firstNoteful === -1 ? 0 : firstNoteful };
+    const noteful = parsed.tracks
+      .map((t, ti) => ({ t, ti }))
+      .filter(({ t }) => t.events.some(e => e.kind === "note-on" && e.velocity > 0));
+    if (!noteful.length) {
+      return [{
+        name: file.name,
+        bytes,
+        parsed,
+        trackIndex: 0
+      }];
+    }
+    // Multi-track SMF → one source per track (up to 6 total later)
+    if (noteful.length > 1) {
+      return noteful.map(({ t, ti }) => ({
+        name: `${file.name.replace(/\.(mid|midi)$/i, "")} · ${t.name || `Tr ${ti + 1}`}`,
+        bytes,
+        parsed: {
+          ...parsed,
+          tracks: parsed.tracks,
+          lengthTicks: Math.max(parsed.lengthTicks, t.events[t.events.length - 1]?.tick ?? 0)
+        },
+        trackIndex: ti
+      })).slice(0, 6);
+    }
+    return [{
+      name: file.name,
+      bytes,
+      parsed,
+      trackIndex: noteful[0].ti
+    }];
+  };
+
+  const parseMidiFile = async (file: File): Promise<LoadedMidi | null> => {
+    const list = await expandMidiFile(file);
+    return list[0] ?? null;
   };
 
   const onMidiDrop = async (files: File[]) => {
@@ -144,16 +295,14 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
     const additions: LoadedMidi[] = [];
     for (const file of files) {
       try {
-        const m = await parseMidiFile(file);
-        if (m) additions.push(m);
+        const parts = await expandMidiFile(file);
+        additions.push(...parts);
       } catch (e) {
         setError(`Failed to parse ${file.name}: ${(e as Error).message}`);
       }
     }
     if (!additions.length) return;
 
-    // Auto-suggest the first BPM/time-sig from a dropped MIDI (only if the
-    // user hasn't already customised them away from the default 120/4).
     const first = additions[0].parsed;
     setMeta(m => ({
       ...m,
@@ -164,13 +313,19 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
 
     setMidis(prev => {
       const combined = [...prev, ...additions].slice(0, 6);
-      // Auto-assign first N roles that aren't taken yet
       setAssignments(a => {
         const next = { ...a };
         const taken = new Set(Object.values(next).filter(v => v !== "unassigned")) as Set<StyleRole>;
-        combined.forEach((_, i) => {
-          if (next[i]) return;
-          const role = STYLE_CHANNELS.map(s => s.role).find(r => !taken.has(r as StyleRole)) as StyleRole | undefined;
+        combined.forEach((m, i) => {
+          if (next[i] && next[i] !== "unassigned") {
+            taken.add(next[i] as StyleRole);
+            return;
+          }
+          const ch = m.parsed.tracks[m.trackIndex]?.channelsUsed?.[0];
+          const suggested = suggestRoleForTrack(i + 1, ch != null ? [ch] : []) as StyleRole;
+          const role = (!taken.has(suggested)
+            ? suggested
+            : STYLE_CHANNELS.map(s => s.role).find(r => !taken.has(r as StyleRole))) as StyleRole | undefined;
           if (role) { next[i] = role; taken.add(role); }
           else next[i] = "unassigned";
         });
@@ -251,6 +406,8 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
         ?? ROLE_DEFAULT_SOUND_ID[role]
         ?? DEFAULT_PIANO_SOUND_ID;
       const sound = findSound(soundId);
+      const vol = roleVolumes[role as StyleRole];
+      const pan = rolePans[role as StyleRole];
       out.push({
         sourceName: m.name,
         track,
@@ -259,11 +416,14 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
         program: sound.program,
         bankMsb: sound.msb,
         bankLsb: sound.lsb,
-        soundName: `${sound.name} (${sound.bank})`
+        soundName: `${sound.name} (${sound.bank})`,
+        volume: vol != null ? Math.round(vol * 127) : undefined,
+        pan: pan != null ? Math.round(pan * 127) : undefined,
+        section: roleSections[role as StyleRole]
       });
     }
     return out;
-  }, [midis, assignments, roleSounds]);
+  }, [midis, assignments, roleSounds, roleVolumes, rolePans, roleSections]);
 
   /** Role → LoadedMidi resolver used by the LivePreview lanes. */
   const roleMidiMap = useMemo(() => {
@@ -311,6 +471,7 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
 
   /** Update events on the track assigned to a role (drag / resize / copy). */
   const onRoleEventsChange = useCallback((role: StyleRole, events: MidiEvent[]) => {
+    pushUndo();
     setMidis(list => {
       const idx = list.findIndex((_, i) => assignments[i] === role);
       if (idx < 0) return list;
@@ -331,7 +492,7 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
         };
       });
     });
-  }, [assignments]);
+  }, [assignments, pushUndo]);
 
   /** Shift all events on a role's track later (+) or earlier (−). */
   const onShiftRoleTiming = useCallback((role: StyleRole, deltaTicks: number) => {
@@ -504,10 +665,10 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
   const compile = () => {
     setError(null);
     setResult(null);
-    if (!ausParsed) { setError("Please upload an .aus file first."); return; }
+    setExportWarnings([]);
+    if (!ausParsed) { setError("Please upload an .aus or .sty file first."); return; }
     if (assignedTracks.length === 0) { setError("Assign at least one MIDI track to a style channel."); return; }
 
-    // Preflight: AUS must expose a real audio body or the keyboard rejects the .sty.
     const hasAudioChunk =
       ausParsed.audioChunks.some(c => c.id === "AASM" || c.id === "AWav" || c.id === "AUDI" || c.id === "Adat") ||
       !!ausParsed.audio;
@@ -522,28 +683,146 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
     try {
       const tpq = midis[0]?.parsed.ticksPerQuarter ?? 480;
       const bars = Math.max(1, ausParsed.meta.bars || 4);
+      // Ensure active section is included in export set
+      const sections = meta.sections.length ? [...meta.sections] : (["Main A"] as StyleSection[]);
+      if (activeSection && !sections.includes(activeSection as StyleSection)) {
+        // map Fill In UI label
+        const mapped = activeSection === "Fill In" ? "Fill In AA" : activeSection;
+        if (!sections.includes(mapped as StyleSection)) {
+          /* keep meta.sections as user chose */
+        }
+      }
       const built = buildStyle({
         name: meta.name || "AudioStyle",
         category: meta.category,
         bpm: meta.bpm,
         timeSigNum: meta.timeSigNum,
         timeSigDen: meta.timeSigDen,
-        sections: meta.sections.length ? meta.sections : ["Main A"],
+        sections,
         ticksPerQuarter: tpq,
         sectionBars: bars,
+        sectionLengthTicks: loopLenTicks,
         aus: ausParsed,
         tracks: assignedTracks,
-        preferAusCasm: true
+        preferAusCasm: true,
+        requireAusCasm,
+        includeMdb: true,
+        includeOtsc: true,
+        liftAusSetup: true
       });
       setResult(built);
-      if (built.casmSource === "generated") {
-        // Soft warning only — generated CASM can still load, but AUS CASM is safer.
-        setError(null);
-      }
+      setExportWarnings(built.validation.warnings);
     } catch (e) {
       setError(`Compile failed: ${(e as Error).message}`);
     }
   };
+
+  const buildSnapshot = useCallback((): ProjectSnapshot => ({
+    version: 1,
+    savedAt: new Date().toISOString(),
+    ausName,
+    ausB64: ausBytesRef.current ? bytesToB64(ausBytesRef.current) : null,
+    midis: midis.map(m => ({
+      name: m.name,
+      b64: m.bytes.length ? bytesToB64(m.bytes) : "",
+      trackIndex: m.trackIndex
+    })),
+    assignments,
+    meta,
+    keySnap,
+    roleSounds,
+    roleVolumes,
+    rolePans,
+    roleSections,
+    activeSection,
+    requireAusCasm
+  }), [ausName, midis, assignments, meta, keySnap, roleSounds, roleVolumes, rolePans, roleSections, activeSection, requireAusCasm]);
+
+  const restoreSnapshot = useCallback(async (snap: ProjectSnapshot) => {
+    setMeta(snap.meta);
+    setKeySnap(snap.keySnap);
+    setRoleSounds(snap.roleSounds ?? {});
+    setRoleVolumes(snap.roleVolumes ?? {});
+    setRolePans(snap.rolePans ?? {});
+    setRoleSections(snap.roleSections ?? {});
+    setActiveSection(snap.activeSection || "Main A");
+    setRequireAusCasm(!!snap.requireAusCasm);
+    setAssignments(snap.assignments ?? {});
+    if (snap.ausB64) {
+      const bytes = b64ToBytes(snap.ausB64);
+      applyAusBytes(bytes, snap.ausName || "project.aus");
+    }
+    const loaded: LoadedMidi[] = [];
+    for (const m of snap.midis ?? []) {
+      if (!m.b64) continue;
+      try {
+        const bytes = b64ToBytes(m.b64);
+        const parsed = parseMidi(bytes);
+        loaded.push({
+          name: m.name,
+          bytes,
+          parsed,
+          trackIndex: m.trackIndex ?? 0
+        });
+      } catch { /* skip broken midis */ }
+    }
+    setMidis(loaded);
+    setError(null);
+    setResult(null);
+  }, [applyAusBytes]);
+
+  // Autosave every 15s when project has content
+  useEffect(() => {
+    if (!ausParsed && midis.length === 0) return;
+    const t = window.setTimeout(() => {
+      void autosaveProject(buildSnapshot());
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [ausParsed, midis, assignments, meta, buildSnapshot]);
+
+  // Offer restore on mount
+  useEffect(() => {
+    void (async () => {
+      const snap = await loadAutosave();
+      if (snap?.ausB64 || (snap?.midis?.length ?? 0) > 0) {
+        // silent restore only if empty workspace
+        if (!ausParsed && midis.length === 0) {
+          try { await restoreSnapshot(snap!); } catch { /* ignore */ }
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync meta BPM → engine
+  useEffect(() => {
+    engineRef.current?.setBpm(meta.bpm);
+  }, [meta.bpm]);
+
+  // Global shortcuts
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        undo();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        downloadProjectFile(buildSnapshot(), meta.name);
+      }
+      if (e.code === "Space") {
+        e.preventDefault();
+        const eng = engineRef.current;
+        if (!eng) return;
+        if (eng.state.playing) eng.stop();
+        else void eng.play();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, buildSnapshot, meta.name]);
 
   const download = () => {
     if (!result) return;
@@ -579,6 +858,67 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
     engineRef.current?.setStyleProgram(ch, sound.program);
   }, []);
 
+  const onVolumeChange = useCallback((role: StyleRole, vol01: number) => {
+    setRoleVolumes(v => ({ ...v, [role]: vol01 }));
+    engineRef.current?.setChannelUserGain(roleToEngineChannel(role), vol01);
+  }, []);
+
+  const onPanChange = useCallback((role: StyleRole, pan01: number) => {
+    setRolePans(p => ({ ...p, [role]: pan01 }));
+  }, []);
+
+  const onSeekRatio = useCallback((ratio: number) => {
+    const eng = engineRef.current;
+    if (!eng) return;
+    eng.seekTicks(Math.round(ratio * loopLenTicks));
+  }, [loopLenTicks]);
+
+  const onSectionSelect = useCallback((section: string) => {
+    setActiveSection(section);
+    // Toggle section into meta.sections for export
+    const mapped = (section === "Fill In" ? "Fill In AA" : section) as StyleSection;
+    setMeta(m => {
+      if (m.sections.includes(mapped)) return m;
+      return { ...m, sections: [...m.sections, mapped] };
+    });
+  }, []);
+
+  const onRoleSectionChange = useCallback((role: StyleRole, section: StyleSection) => {
+    setRoleSections(s => ({ ...s, [role]: section }));
+  }, []);
+
+  const onQuantizeRole = useCallback((role: StyleRole) => {
+    const m = roleMidiMap[role];
+    if (!m) return;
+    const track = m.parsed.tracks[m.trackIndex];
+    if (!track) return;
+    pushUndo();
+    onRoleEventsChange(role, quantizeEvents(track.events, snapTicks, 1));
+  }, [roleMidiMap, snapTicks, onRoleEventsChange, pushUndo]);
+
+  const onSwingRole = useCallback((role: StyleRole) => {
+    const m = roleMidiMap[role];
+    if (!m) return;
+    const track = m.parsed.tracks[m.trackIndex];
+    if (!track) return;
+    pushUndo();
+    onRoleEventsChange(role, applySwing(track.events, snapTicks, 0.3));
+  }, [roleMidiMap, snapTicks, onRoleEventsChange, pushUndo]);
+
+  const onHumanizeRole = useCallback((role: StyleRole) => {
+    const m = roleMidiMap[role];
+    if (!m) return;
+    const track = m.parsed.tracks[m.trackIndex];
+    if (!track) return;
+    pushUndo();
+    onRoleEventsChange(role, humanizeEvents(track.events, Math.max(2, snapTicks / 4), 6));
+  }, [roleMidiMap, snapTicks, onRoleEventsChange, pushUndo]);
+
+  const onBpmFromTransport = useCallback((bpm: number) => {
+    setMeta(m => ({ ...m, bpm }));
+    engineRef.current?.setBpm(bpm);
+  }, []);
+
   const rolePickers = STYLE_CHANNELS.map(sc => ({
     role: sc.role,
     midi: roleMidiMap[sc.role] ?? null,
@@ -586,19 +926,23 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
     engineChannel: sc.ch - 1,
     mute: !!muteRoles[sc.role],
     solo: !!soloRoles[sc.role],
-    soundId: roleSounds[sc.role] ?? ROLE_DEFAULT_SOUND_ID[sc.role] ?? DEFAULT_PIANO_SOUND_ID
+    soundId: roleSounds[sc.role] ?? ROLE_DEFAULT_SOUND_ID[sc.role] ?? DEFAULT_PIANO_SOUND_ID,
+    volume: roleVolumes[sc.role] ?? 1,
+    pan: rolePans[sc.role] ?? 0.5,
+    section: roleSections[sc.role] ?? (activeSection as StyleSection) ?? "Main A"
   }));
 
   const stepAus = !!ausParsed;
   const stepMidi = assignedTracks.length > 0;
   const stepReady = canCompile;
   const stepDone = !!result;
+  const footerReveal = useInView<HTMLElement>();
 
   return (
     <div className="st-root">
-      <header className="st-nav">
+      <header className="st-nav anim-nav">
         <div className="st-nav-inner">
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-3 min-w-0 anim-nav-item">
             {onBackHome && (
               <button type="button" className="st-btn st-btn-ghost" onClick={onBackHome}>
                 ← Home
@@ -607,12 +951,47 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
             <BrandLogo size={80} onClick={onBackHome} className="st-brand" />
           </div>
 
-          <div className="st-nav-meta hidden sm:flex">
+          <div className="st-nav-meta hidden sm:flex anim-nav-item">
             <span className="st-pill st-pill-green">PSR-SX & Genos</span>
             <span className="st-pill">Live Audio · MIDI · Export</span>
           </div>
 
-          <div className="st-nav-actions">
+          <div className="st-nav-actions anim-nav-item">
+            <button
+              type="button"
+              className="st-btn st-btn-ghost"
+              title="Undo (Ctrl+Z)"
+              onClick={undo}
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              className="st-btn st-btn-ghost"
+              title="Save project (Ctrl+S)"
+              onClick={() => downloadProjectFile(buildSnapshot(), meta.name)}
+            >
+              Save
+            </button>
+            <label className="st-btn st-btn-ghost" style={{ cursor: "pointer" }}>
+              Load
+              <input
+                type="file"
+                accept=".yssproj,application/json"
+                className="hidden"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!f) return;
+                  try {
+                    const snap = await readProjectFile(f);
+                    await restoreSnapshot(snap);
+                  } catch (err) {
+                    setError(`Project load failed: ${(err as Error).message}`);
+                  }
+                }}
+              />
+            </label>
             <button
               type="button"
               className="st-btn st-btn-solid"
@@ -627,13 +1006,13 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
       <main className="st-main">
         <section className="st-banner">
           <div>
-            <p className="st-banner-kicker">Professional style editor</p>
-            <h1 className="st-banner-title">Create, preview & export arranger styles</h1>
-            <p className="st-banner-sub">
+            <p className="st-banner-kicker anim-page-kicker">Professional style editor</p>
+            <h1 className="st-banner-title anim-page-title">Create, preview & export arranger styles</h1>
+            <p className="st-banner-sub anim-page-lead">
               Load Live Audio Styles, route MIDI channels, edit the piano roll, then compile a keyboard-ready .sty — all in the browser.
             </p>
           </div>
-          <div className="st-steps">
+          <div className="st-steps anim-fade-up anim-fade-up-d3">
             <span className={`st-step ${stepAus ? "done" : "active"}`}>
               <span className="st-step-num">{stepAus ? "✓" : "1"}</span> Load AUS
             </span>
@@ -662,9 +1041,9 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
             </div>
             <div className="st-card-b">
               <DropZone
-                label={ausName ?? "Drop .aus here or click to browse"}
-                accept=".aus"
-                hint="AASM / AWav audio body preserved for keyboard load"
+                label={ausName ?? "Drop .aus or .sty here"}
+                accept=".aus,.sty"
+                hint="AASM / AWav preserved · open .sty to re-edit"
                 loaded={!!ausName}
                 variant="cyan"
                 onFiles={onAusDrop}
@@ -726,6 +1105,20 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
             onSnapAllToKey={onSnapAllToKey}
             onSoundChange={onSoundChange}
             projectName={meta.name}
+            timeSigNum={meta.timeSigNum}
+            timeSigDen={meta.timeSigDen}
+            projectBpm={meta.bpm}
+            onBpmChange={onBpmFromTransport}
+            activeSection={activeSection}
+            onSectionSelect={onSectionSelect}
+            onSeekRatio={onSeekRatio}
+            onVolumeChange={onVolumeChange}
+            onPanChange={onPanChange}
+            onRoleSectionChange={onRoleSectionChange}
+            onQuantizeRole={onQuantizeRole}
+            onSwingRole={onSwingRole}
+            onHumanizeRole={onHumanizeRole}
+            enabledSections={meta.sections}
           />
         </section>
 
@@ -743,6 +1136,9 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
               onCompile={compile}
               onDownload={download}
               error={error}
+              warnings={exportWarnings}
+              requireAusCasm={requireAusCasm}
+              onRequireAusCasmChange={setRequireAusCasm}
             />
           </div>
         </section>
@@ -771,9 +1167,12 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
           </div>
         </details>
 
-        <footer className="st-footer">
-          <div>Private by design · files never leave this device</div>
-          <div className="hex">SFF2 · SInt · CASM · AASM · AWav</div>
+        <footer
+          ref={footerReveal.ref}
+          className={`st-footer anim-footer ${footerReveal.inView ? "is-in" : ""}`}
+        >
+          <div className="anim-footer-col">Private by design · files never leave this device</div>
+          <div className="hex anim-footer-col">SFF2 · SInt · CASM · AASM · AWav</div>
         </footer>
       </main>
     </div>

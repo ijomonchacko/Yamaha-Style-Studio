@@ -525,7 +525,12 @@ export function validateStyleBytes(sty: Bytes): StyleValidation {
     warnings.push("Audio body is unusually small.");
   }
 
-  // Expected structure: SMF → CASM → audio (no required OTSc for audio styles)
+  const mdb = tops.find(c => c.id === "MDB ");
+  const otsc = tops.find(c => c.id === "OTSc");
+  if (mdb) warnings.push(`MDB present (${mdb.size} B)`);
+  if (otsc) warnings.push(`OTSc present (${otsc.size} B)`);
+
+  // Expected structure: SMF → CASM → audio [→ MDB] [→ OTSc]
   const structure = tops.map(c => c.id).join(" → ");
   if (tops.length === 0) {
     errors.push("No top-level style chunks found after SMF.");
