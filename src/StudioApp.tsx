@@ -34,11 +34,11 @@ import {
   ProjectSnapshot,
   readProjectFile
 } from "./lib/project/projectStore";
-import { BrandLogo } from "./components/BrandLogo";
 import { useInView } from "./hooks/useInView";
 import "./studio.css";
 
 interface StudioAppProps {
+  /** Home navigation is handled by App SiteNav */
   onBackHome?: () => void;
 }
 
@@ -48,7 +48,7 @@ interface StudioAppProps {
  *   - Role assignments, style metadata, PlaybackEngine, compile result.
  * All parsing runs client-side.
  */
-export function StudioApp({ onBackHome }: StudioAppProps) {
+export function StudioApp(_props: StudioAppProps) {
   const [ausName, setAusName] = useState<string | null>(null);
   const [ausParsed, setAusParsed] = useState<AusParseResult | null>(null);
   const [midis, setMidis] = useState<LoadedMidi[]>([]);
@@ -940,23 +940,15 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
 
   return (
     <div className="st-root">
-      <header className="st-nav anim-nav">
+      {/* SiteNav is rendered by App (fixed portal) */}
+      <header className="st-nav st-nav-tools">
         <div className="st-nav-inner">
-          <div className="flex items-center gap-3 min-w-0 anim-nav-item">
-            {onBackHome && (
-              <button type="button" className="st-btn st-btn-ghost" onClick={onBackHome}>
-                ← Home
-              </button>
-            )}
-            <BrandLogo size={80} onClick={onBackHome} className="st-brand" />
-          </div>
-
-          <div className="st-nav-meta hidden sm:flex anim-nav-item">
+          <div className="st-nav-meta hidden sm:flex">
             <span className="st-pill st-pill-green">PSR-SX & Genos</span>
             <span className="st-pill">Live Audio · MIDI · Export</span>
           </div>
 
-          <div className="st-nav-actions anim-nav-item">
+          <div className="st-nav-actions">
             <button
               type="button"
               className="st-btn st-btn-ghost"
@@ -1028,7 +1020,7 @@ export function StudioApp({ onBackHome }: StudioAppProps) {
           </div>
         </section>
 
-        <section className="st-grid-2">
+        <section className="st-grid-2" id="st-upload">
           <div className="st-card">
             <div className="st-card-h">
               <div>

@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { BrandLogo } from "../BrandLogo";
 import { useInView } from "../../hooks/useInView";
 import "../../docs.css";
 
@@ -59,23 +58,8 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
 
   return (
     <div className="docs-root">
-      <nav className="lp-nav anim-nav">
-        <div className="lp-nav-inner">
-          <div className="anim-nav-item">
-            <BrandLogo size={88} onClick={onHome} className="lp-brand" />
-          </div>
-          <ul className="lp-menu">
-            <li className="anim-nav-item"><button type="button" className="lp-menu-item" onClick={onHome}>Home</button></li>
-            <li className="anim-nav-item"><button type="button" className="lp-menu-item" onClick={onHome}>Features</button></li>
-            <li className="anim-nav-item"><button type="button" className="lp-menu-item docs-nav-active">Docs</button></li>
-          </ul>
-          <div className="lp-nav-actions docs-nav-actions anim-nav-item">
-            <button type="button" className="docs-btn docs-btn-solid" onClick={onLaunchStudio}>Launch Studio</button>
-          </div>
-        </div>
-      </nav>
-
-      <div className="docs-layout">
+      {/* SiteNav is rendered by App (fixed portal) */}
+      <div className="docs-layout sn-page-pad">
         <aside className="docs-toc">
           <div className="docs-toc-title">Guide</div>
           {TOC.map(item => (

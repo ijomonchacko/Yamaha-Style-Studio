@@ -1,8 +1,20 @@
-/** Floating premium DAW-style mockup of Yamaha Style Studio */
-export function StudioMockup() {
+/**
+ * Large Yamaha Style Studio product mockup (hero product shot).
+ * No AI assistant panel.
+ */
+export function StudioMockup({ large = false }: { large?: boolean }) {
   return (
-    <div className="lp-mock" aria-hidden>
-      {/* Main editor shell */}
+    <div className={`lp-dash liquid-glass ${large ? "lp-dash-large" : ""}`}>
+      <div className="lp-dash-preview lp-dash-preview-full">
+        <StudioShell />
+      </div>
+    </div>
+  );
+}
+
+function StudioShell() {
+  return (
+    <div className="lp-mock lp-mock-in-dash" aria-hidden>
       <div className="lp-mock-shell">
         <div className="lp-mock-titlebar">
           <div className="lp-mock-dots">
@@ -15,8 +27,7 @@ export function StudioMockup() {
           </div>
         </div>
 
-        <div className="lp-mock-body">
-          {/* Left rail — sections */}
+        <div className="lp-mock-body lp-mock-body-no-ai">
           <aside className="lp-mock-rail">
             <div className="lp-mock-rail-label">Sections</div>
             {["Intro A", "Intro B", "Intro C", "Main A", "Main B", "Main C", "Main D", "Fill In", "Break", "Ending A", "Ending B", "Ending C"].map((s, i) => (
@@ -24,7 +35,6 @@ export function StudioMockup() {
             ))}
           </aside>
 
-          {/* Center — tracks + piano roll */}
           <div className="lp-mock-center">
             <div className="lp-mock-toolbar">
               <span className="lp-mock-tempo">♩ 128 BPM · 4/4</span>
@@ -66,7 +76,6 @@ export function StudioMockup() {
             </div>
           </div>
 
-          {/* Right — mixer + AI */}
           <aside className="lp-mock-side">
             <div className="lp-mock-panel">
               <div className="lp-mock-panel-h">Style Track Mixer</div>
@@ -81,30 +90,13 @@ export function StudioMockup() {
                 ))}
               </div>
             </div>
-            <div className="lp-mock-panel ai">
-              <div className="lp-mock-panel-h">AI Assistant</div>
-              <div className="lp-mock-ai-line" />
-              <div className="lp-mock-ai-line short" />
-              <div className="lp-mock-ai-line mid" />
-              <div className="lp-mock-ai-btn">Suggest fill-in</div>
+            <div className="lp-mock-panel">
+              <div className="lp-mock-panel-h">Export</div>
+              <div className="lp-mock-export-meta">SFF2 · CASM · AASM</div>
+              <div className="lp-mock-export-meta soft">PSR-SX &amp; Genos</div>
+              <div className="lp-mock-export-btn">Export Style</div>
             </div>
           </aside>
-        </div>
-      </div>
-
-      {/* Floating satellite cards */}
-      <div className="lp-mock-float left">
-        <div className="lp-mock-float-h">.AUS Waveform</div>
-        <svg viewBox="0 0 200 40" className="lp-mock-wave">
-          <path d="M0 20 Q10 5 20 20 T40 20 T60 20 T80 12 T100 28 T120 18 T140 22 T160 10 T180 24 T200 20" fill="none" stroke="#3ecfff" strokeWidth="1.6" />
-        </svg>
-      </div>
-      <div className="lp-mock-float right">
-        <div className="lp-mock-float-h">MIDI Events</div>
-        <div className="lp-mock-events">
-          <span>Note On · C2 · ch11</span>
-          <span>CC 11 · Expression</span>
-          <span>Program · Acoustic Bass</span>
         </div>
       </div>
     </div>

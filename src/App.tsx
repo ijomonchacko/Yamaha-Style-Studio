@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { LandingPage } from "./components/landing/LandingPage";
 import { DocsPage } from "./components/docs/DocsPage";
 import { StudioApp } from "./StudioApp";
+import { SiteNav } from "./components/SiteNav";
 import "./landing.css";
+import "./site-nav.css";
 
 type Route = "home" | "studio" | "docs";
 
@@ -20,36 +22,37 @@ function routeToPath(route: Route): string {
 }
 
 function getRoute(): Route {
-  // Prefer clean path URLs; migrate legacy hash routes once.
   const hash = window.location.hash.replace(/^#\/?/, "").toLowerCase();
   if (hash === "studio" || hash === "app" || hash === "launch") return "studio";
   if (hash === "docs" || hash === "documentation" || hash === "guide") return "docs";
   return pathToRoute(window.location.pathname);
 }
 
+function scrollToId(id: string) {
+  if (id === "hero" || id === "home") {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    return;
+  }
+  document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 /**
- * Root router: home · docs · studio
- * Clean paths: `/` home, `/docs` documentation, `/studio` studio.
+ * Root router + single shared fixed SiteNav for home · docs · studio.
  */
 export default function App() {
   const [route, setRoute] = useState<Route>(() => getRoute());
 
   useEffect(() => {
-    // Migrate #/studio → /studio (and clear hash)
     const hash = window.location.hash.replace(/^#\/?/, "").toLowerCase();
     let next: Route | null = null;
     if (hash === "studio" || hash === "app" || hash === "launch") next = "studio";
     else if (hash === "docs" || hash === "documentation" || hash === "guide") next = "docs";
-    else if (hash === "" || hash === "/") {
-      // hash home with non-root path already handled by pathname
-    }
 
     if (next) {
       const path = routeToPath(next);
       window.history.replaceState({ route: next }, "", path);
       setRoute(next);
     } else if (window.location.hash) {
-      // Drop leftover hashes on clean paths
       window.history.replaceState({ route: getRoute() }, "", routeToPath(getRoute()));
     }
 
@@ -71,13 +74,69 @@ export default function App() {
   const goHome = useCallback(() => navigate("home"), [navigate]);
   const goDocs = useCallback(() => navigate("docs"), [navigate]);
 
-  if (route === "studio") {
-    return <StudioApp onBackHome={goHome} />;
-  }
+  const nav =
+    route === "home" ? (
+      <SiteNav
+        tone="dark"
+        hideOnScroll
+        hideWhenPastId="hero"
+        onLogoClick={() => scrollToId("hero")}
+        onPrimary={goStudio}
+        primaryLabel="Launch Studio"
+        secondaryLabel="Docs"
+        onSecondary={goDocs}
+        links={[
+          { id: "home", label: "Home", onClick: () => scrollToId("hero"), active: true },
+          { id: "features", label: "Features", onClick: () => scrollToId("features") },
+          { id: "live-audio", label: "Live Audio", onClick: () => scrollToId("live-audio") },
+          { id: "midi", label: "MIDI Editor", onClick: () => scrollToId("midi") },
+          { id: "community", label: "Community", onClick: () => scrollToId("community") }
+        ]}
+      />
+    ) : route === "docs" ? (
+      <SiteNav
+        tone="light"
+        hideOnScroll
+        onLogoClick={goHome}
+        onPrimary={goStudio}
+        primaryLabel="Launch Studio"
+        secondaryLabel="Home"
+        onSecondary={goHome}
+        links={[
+          { id: "home", label: "Home", onClick: goHome },
+          { id: "features", label: "Features", onClick: goHome },
+          { id: "docs", label: "Docs", onClick: () => scrollToId("overview"), active: true }
+        ]}
+      />
+    ) : (
+      <SiteNav
+        tone="light"
+        hideOnScroll
+        onLogoClick={goHome}
+        onPrimary={() => scrollToId("st-export")}
+        primaryLabel="Export"
+        secondaryLabel="Home"
+        onSecondary={goHome}
+        links={[
+          { id: "home", label: "Home", onClick: goHome },
+          { id: "upload", label: "Upload", onClick: () => scrollToId("st-upload") },
+          {
+            id: "preview",
+            label: "Live Preview",
+            onClick: () => scrollToId("st-daw"),
+            active: true
+          },
+          { id: "export", label: "Export", onClick: () => scrollToId("st-export") }
+        ]}
+      />
+    );
 
-  if (route === "docs") {
-    return <DocsPage onHome={goHome} onLaunchStudio={goStudio} />;
-  }
-
-  return <LandingPage onLaunchStudio={goStudio} onOpenDocs={goDocs} />;
+  return (
+    <>
+      {nav}
+      {route === "studio" && <StudioApp onBackHome={goHome} />}
+      {route === "docs" && <DocsPage onHome={goHome} onLaunchStudio={goStudio} />}
+      {route === "home" && <LandingPage onLaunchStudio={goStudio} onOpenDocs={goDocs} />}
+    </>
+  );
 }

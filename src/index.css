@@ -37,17 +37,44 @@
 
 html, body, #root { height: 100%; min-height: 100%; }
 
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  transform: none !important;
+  filter: none !important;
+  perspective: none !important;
+  overflow-x: hidden;
+}
 
 body {
   margin: 0;
-  overflow-y: auto;
+  /* Document scroll on html/body — fixed elements stick to viewport */
   overflow-x: hidden;
+  overflow-y: scroll;
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  transform: none !important;
+  filter: none !important;
+  perspective: none !important;
+  position: static !important;
+}
+
+#root {
+  transform: none !important;
+  filter: none !important;
+  perspective: none !important;
+  position: relative;
+  min-height: 100%;
+  /* Never create a fixed containing block */
+  contain: none !important;
+  will-change: auto !important;
+}
+
+/* Kill any leftover fixed-nav host */
+#site-nav-root {
+  display: none !important;
 }
 
 ::selection {

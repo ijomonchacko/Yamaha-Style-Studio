@@ -4,6 +4,7 @@ import { Analytics } from "@vercel/analytics/react";
 import App from "./App";
 import "./index.css";
 import "./motion.css";
+import "./site-nav.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

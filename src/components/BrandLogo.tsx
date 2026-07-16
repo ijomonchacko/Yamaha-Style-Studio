@@ -3,23 +3,29 @@ interface Props {
   size?: number;
   onClick?: () => void;
   label?: string;
+  /** white = light mark (dark hero); dark = dark mark (light bars) */
+  variant?: "dark" | "white";
 }
 
-/** White logo mark (logo-only). Uses dark plate so it reads on light navbars. */
+/** Transparent logo (bg removed). No plate / black box. */
 export function BrandLogo({
   className = "",
-  size = 56,
+  size = 72,
   onClick,
-  label = "Yamaha Style Studio"
+  label = "Yamaha Style Studio",
+  variant = "dark"
 }: Props) {
+  // Monogram only (text cropped out) — transparent PNG
+  const src = variant === "white" ? "/logo-mark-white.png" : "/logo-mark-dark.png";
+
   const img = (
     <img
-      src="/white-logo.jpg"
+      src={src}
       alt={label}
       width={size}
       height={size}
       className="brand-logo-img"
-      style={{ width: size, height: size }}
+      style={{ width: size, height: "auto", maxHeight: size }}
       draggable={false}
     />
   );
@@ -28,7 +34,7 @@ export function BrandLogo({
     return (
       <button
         type="button"
-        className={`brand-logo ${className}`}
+        className={`brand-logo brand-logo-${variant} ${className}`}
         onClick={onClick}
         aria-label={label}
         title={label}
@@ -39,7 +45,7 @@ export function BrandLogo({
   }
 
   return (
-    <div className={`brand-logo ${className}`} title={label}>
+    <div className={`brand-logo brand-logo-${variant} ${className}`} title={label}>
       {img}
     </div>
   );

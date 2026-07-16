@@ -140,6 +140,56 @@
   }
 }
 
+/* Section cards — shine sweep on hover */
+.lp-feature-card-anim {
+  position: relative;
+  overflow: hidden;
+  will-change: transform, opacity, filter;
+}
+.lp-feature-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 14px;
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.02));
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  font-size: 16px;
+  line-height: 1;
+}
+.lp-feature-card-shine {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.45) 48%,
+    transparent 62%
+  );
+  transform: translateX(-120%) skewX(-12deg);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.lp-feature-card-anim:hover .lp-feature-card-shine {
+  opacity: 1;
+  animation: animCardShine 0.85s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.lp-community-card-anim {
+  will-change: transform, opacity, filter;
+}
+.lp-feature-visual {
+  min-width: 0;
+  width: 100%;
+}
+
+@keyframes animCardShine {
+  from { transform: translateX(-120%) skewX(-12deg); }
+  to { transform: translateX(140%) skewX(-12deg); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .anim-nav,
   .anim-nav-item,
@@ -160,5 +210,8 @@
     opacity: 1 !important;
     transform: none !important;
     transition: none !important;
+  }
+  .lp-feature-card-shine {
+    display: none !important;
   }
 }

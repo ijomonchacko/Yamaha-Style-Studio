@@ -25,14 +25,17 @@
   font-family: Inter, "Noto Sans", system-ui, sans-serif;
 }
 
-/* ─── Top navigation (landing-aligned) ─── */
+/* ─── Secondary tools bar under shared SiteNav ─── */
 .st-nav {
-  position: sticky;
-  top: 0;
-  z-index: 50;
+  position: relative;
+  z-index: 10;
   background: linear-gradient(180deg, #f7f7f7 0%, #f2f2f2 100%);
   border-bottom: 1px solid rgba(0, 0, 0, 0.07);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8) inset;
+  margin-top: 88px;
+}
+.st-nav-tools {
+  margin-top: 88px;
 }
 .st-nav-inner {
   max-width: 1480px;
@@ -44,22 +47,24 @@
   gap: 16px;
 }
 .st-brand {
-  padding: 0;
+  padding: 0 !important;
   margin: 0;
   margin-right: auto;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
   justify-content: flex-start;
+  align-self: center;
+  transform: none !important;
 }
 .st-brand .brand-logo-img {
-  border-radius: 14px;
-  background: transparent;
-  box-shadow: none;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
   width: auto !important;
   height: auto;
-  max-height: 68px;
-  min-width: 80px;
+  max-height: 72px !important;
+  min-width: 72px;
   object-position: left center;
 }
 .st-nav-meta {
