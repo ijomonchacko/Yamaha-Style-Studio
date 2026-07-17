@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════
-   Fixed floating pill navbar — previous larger size restored
-   Landing: only visible while hero is in view
+   Full-width fixed site navbar (edge-to-edge bar)
+   Landing: hide after hero; Docs: always visible full-width
    ═══════════════════════════════════════════════════════════ */
 
 .sn-root {
@@ -11,11 +11,11 @@
   z-index: 10000 !important;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 14px 16px 0;
+  align-items: stretch;
+  padding: 0;
   margin: 0 !important;
   width: 100%;
-  max-width: 100vw;
+  max-width: none;
   box-sizing: border-box;
   pointer-events: none;
   transform: none !important;
@@ -26,7 +26,7 @@
   visibility: visible;
   transition: opacity 0.22s ease, visibility 0.22s ease;
 }
-/* Fully gone after scroll — not sticky over Features / docs / studio content */
+
 .sn-root.sn-root-hidden {
   opacity: 0 !important;
   visibility: hidden !important;
@@ -37,39 +37,143 @@
   pointer-events: none !important;
 }
 
+/* Full-width bar — 3-zone grid keeps center links truly centered */
 .sn-pill {
   pointer-events: auto;
   width: 100%;
-  max-width: 1080px;
-  min-height: 66px;
-  display: flex;
+  max-width: none;
+  min-height: 60px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  padding: 6px 12px 6px 10px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
+  padding: 0 clamp(16px, 4vw, 48px);
+  border-radius: 0;
+  background: rgba(12, 12, 14, 0.72);
   backdrop-filter: blur(18px) saturate(1.4);
   -webkit-backdrop-filter: blur(18px) saturate(1.4);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.14) inset,
-    0 12px 40px rgba(0, 0, 0, 0.3);
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  overflow: visible;
+  box-sizing: border-box;
+}
+.sn-logo-plate {
+  justify-self: start;
+}
+.sn-links {
+  justify-self: center;
+  grid-column: 2;
+}
+.sn-actions {
+  justify-self: end;
+  grid-column: 3;
+}
+@media (max-width: 899px) {
+  .sn-pill {
+    display: flex;
+    justify-content: space-between;
+  }
+  .sn-links {
+    display: none !important;
+  }
+  .sn-actions {
+    grid-column: auto;
+  }
 }
 
 .sn-tone-light .sn-pill {
-  background: rgba(255, 255, 255, 0.94);
-  border-color: rgba(0, 0, 0, 0.08);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.9) inset,
-    0 10px 32px rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.96);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9) inset, 0 8px 24px rgba(0, 0, 0, 0.06);
 }
 
-/* YSS mark — no white fill (Instrument Serif italic) */
+/* Studio tone (if used) — solid full-width */
+.sn-tone-studio {
+  padding: 0 !important;
+  background: transparent !important;
+}
+.sn-tone-studio .sn-pill {
+  background: #ffffff !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border: none !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9) inset !important;
+  min-height: 56px !important;
+  max-width: none !important;
+  border-radius: 0 !important;
+  overflow: visible;
+  align-items: center;
+  padding: 0 clamp(16px, 4vw, 48px);
+}
+.sn-tone-studio .sn-logo-plate {
+  width: 40px !important;
+  height: 40px !important;
+  flex-shrink: 0;
+  background: #f3f4f6 !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  color: #0a0a0a !important;
+  transform: none !important;
+}
+.sn-tone-studio .sn-logo-plate:hover {
+  transform: none !important;
+  background: #e5e7eb !important;
+}
+.sn-tone-studio .sn-yss {
+  font-size: 16px !important;
+  color: #0a0a0a !important;
+}
+.sn-tone-studio .sn-link {
+  color: rgba(0, 0, 0, 0.68);
+}
+.sn-tone-studio .sn-link:hover,
+.sn-tone-studio .sn-link.is-active {
+  color: #000;
+  background: rgba(0, 0, 0, 0.06);
+}
+.sn-tone-studio .sn-btn-ghost {
+  color: rgba(0, 0, 0, 0.72);
+}
+.sn-tone-studio .sn-btn-ghost:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: #000;
+}
+.sn-tone-studio .sn-btn-solid {
+  background: #111;
+  color: #fff;
+}
+.sn-tone-studio .sn-btn-solid:hover {
+  background: #000;
+}
+.sn-tone-studio .sn-burger {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.4);
+  color: #111;
+}
+.sn-tone-studio .sn-drawer {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border-radius: 0 0 16px 16px;
+  max-width: none;
+  width: 100%;
+  margin: 0;
+}
+.sn-tone-studio .sn-drawer-link {
+  color: #111;
+}
+.sn-tone-studio .sn-drawer-link:hover,
+.sn-tone-studio .sn-drawer-link.is-active {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* YSS mark */
 .sn-logo-plate {
   flex-shrink: 0;
-  width: 56px;
-  height: 56px;
+  width: 40px;
+  height: 40px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.2);
   padding: 0;
@@ -81,13 +185,15 @@
   color: #fafafa;
   cursor: pointer;
   box-shadow: none;
-  transition: transform 0.15s, background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s;
   overflow: hidden;
   line-height: 1;
+  transform: none !important;
+  grid-column: 1;
 }
 .sn-logo-plate:hover {
   background: rgba(255, 255, 255, 0.08);
-  transform: scale(1.03);
+  transform: none !important;
   border-color: rgba(255, 255, 255, 0.35);
 }
 .sn-tone-light .sn-logo-plate {
@@ -116,9 +222,9 @@
   margin: 0;
   padding: 0;
   align-items: center;
-  gap: 4px;
-  flex: 1;
+  gap: 2px;
   justify-content: center;
+  min-width: 0;
 }
 @media (min-width: 900px) {
   .sn-links { display: flex; }
@@ -136,6 +242,7 @@
   padding: 8px 14px;
   cursor: pointer;
   transition: color 0.15s, background 0.15s;
+  white-space: nowrap;
 }
 .sn-link:hover {
   color: #fff;
@@ -209,7 +316,7 @@
 }
 .sn-btn-solid:hover {
   background: #f5f5f5;
-  transform: scale(1.03);
+  transform: scale(1.02);
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
 }
 .sn-tone-light .sn-btn-solid {
@@ -244,22 +351,24 @@
 .sn-drawer {
   pointer-events: auto;
   width: 100%;
-  max-width: 1080px;
-  margin-top: 10px;
-  padding: 12px;
-  border-radius: 22px;
-  background: rgba(12, 12, 14, 0.92);
+  max-width: none;
+  margin-top: 0;
+  padding: 12px clamp(16px, 4vw, 48px) 16px;
+  border-radius: 0;
+  background: rgba(12, 12, 14, 0.96);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   display: flex;
   flex-direction: column;
   gap: 4px;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  box-sizing: border-box;
 }
 .sn-tone-light .sn-drawer {
   background: rgba(255, 255, 255, 0.98);
-  border-color: rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 }
 @media (min-width: 900px) {
   .sn-drawer { display: none; }
@@ -294,8 +403,9 @@
   height: 44px;
 }
 
+/* Content offset under full-width fixed bar */
 .sn-page-pad {
-  padding-top: 88px;
+  padding-top: 72px;
 }
 
 #site-nav-root {

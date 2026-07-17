@@ -12,6 +12,10 @@ const DB_NAME = "yamaha-style-studio";
 const DB_VERSION = 1;
 const STORE = "projects";
 const AUTO_KEY = "autosave";
+const AUTO_KEY_AUS = "autosave-aus";
+const AUTO_KEY_STY = "autosave-sty";
+
+export type AutosaveMode = "aus" | "sty" | "legacy";
 
 export interface ProjectSnapshot {
   version: 1;
@@ -69,20 +73,67 @@ export async function loadProjectFromIdb(key: string): Promise<ProjectSnapshot |
   return snap;
 }
 
-export async function autosaveProject(snap: ProjectSnapshot): Promise<void> {
+function autoKey(mode?: AutosaveMode): string {
+  if (mode === "aus") return AUTO_KEY_AUS;
+  if (mode === "sty") return AUTO_KEY_STY;
+  return AUTO_KEY;
+}
+
+export async function autosaveProject(
+  snap: ProjectSnapshot,
+  mode?: AutosaveMode
+): Promise<void> {
   try {
-    await saveProjectToIdb(AUTO_KEY, snap);
+    await saveProjectToIdb(autoKey(mode), snap);
+    // Keep legacy key in sync for older restores
+    if (mode) await saveProjectToIdb(AUTO_KEY, snap);
   } catch {
     /* ignore quota / private mode */
   }
 }
 
-export async function loadAutosave(): Promise<ProjectSnapshot | null> {
+export async function loadAutosave(mode?: AutosaveMode): Promise<ProjectSnapshot | null> {
   try {
+    if (mode) {
+      const keyed = await loadProjectFromIdb(autoKey(mode));
+      if (keyed) return keyed;
+    }
     return await loadProjectFromIdb(AUTO_KEY);
   } catch {
     return null;
   }
+}
+
+/** Drop autosave so a previous .aus/.sty never reloads into a new session. */
+export async function clearAutosave(mode?: AutosaveMode): Promise<void> {
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      if (mode) {
+        store.delete(autoKey(mode));
+      } else {
+        store.delete(AUTO_KEY);
+        store.delete(AUTO_KEY_AUS);
+        store.delete(AUTO_KEY_STY);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("IDB delete failed"));
+    });
+    db.close();
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function hasAnyAutosave(): Promise<boolean> {
+  const a = await loadAutosave("aus");
+  const s = await loadAutosave("sty");
+  const l = await loadAutosave();
+  const nonempty = (snap: ProjectSnapshot | null) =>
+    !!(snap?.ausB64 || (snap?.midis?.length ?? 0) > 0);
+  return nonempty(a) || nonempty(s) || nonempty(l);
 }
 
 export function bytesToB64(bytes: Uint8Array): string {

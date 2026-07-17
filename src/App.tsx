@@ -96,45 +96,23 @@ export default function App() {
     ) : route === "docs" ? (
       <SiteNav
         tone="light"
-        hideOnScroll
+        hideOnScroll={false}
         onLogoClick={goHome}
         onPrimary={goStudio}
         primaryLabel="Launch Studio"
-        secondaryLabel="Home"
-        onSecondary={goHome}
         links={[
           { id: "home", label: "Home", onClick: goHome },
-          { id: "features", label: "Features", onClick: goHome },
-          { id: "docs", label: "Docs", onClick: () => scrollToId("overview"), active: true }
+          { id: "docs", label: "Docs", onClick: () => scrollToId("overview"), active: true },
+          { id: "studio", label: "Studio", onClick: goStudio }
         ]}
       />
-    ) : (
-      <SiteNav
-        tone="light"
-        hideOnScroll
-        onLogoClick={goHome}
-        onPrimary={() => scrollToId("st-export")}
-        primaryLabel="Export"
-        secondaryLabel="Home"
-        onSecondary={goHome}
-        links={[
-          { id: "home", label: "Home", onClick: goHome },
-          { id: "upload", label: "Upload", onClick: () => scrollToId("st-upload") },
-          {
-            id: "preview",
-            label: "Live Preview",
-            onClick: () => scrollToId("st-daw"),
-            active: true
-          },
-          { id: "export", label: "Export", onClick: () => scrollToId("st-export") }
-        ]}
-      />
-    );
+    ) : null;
 
   return (
     <>
-      {nav}
-      {route === "studio" && <StudioApp onBackHome={goHome} />}
+      {/* Studio owns its own full-width fixed chrome — no floating SiteNav pill */}
+      {route !== "studio" && nav}
+      {route === "studio" && <StudioApp onBackHome={goHome} onOpenDocs={goDocs} />}
       {route === "docs" && <DocsPage onHome={goHome} onLaunchStudio={goStudio} />}
       {route === "home" && <LandingPage onLaunchStudio={goStudio} onOpenDocs={goDocs} />}
     </>

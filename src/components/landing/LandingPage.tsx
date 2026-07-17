@@ -386,21 +386,18 @@ export function LandingPage({ onLaunchStudio, onOpenDocs }: Props) {
               {
                 name: "PSR Tutorial",
                 url: "https://www.psrtutorial.com/",
-                tag: "Tutorials & styles",
                 blurb: "Long-running hub for Yamaha arranger tutorials, free styles, and practical how-tos.",
                 meta: "psrtutorial.com"
               },
               {
                 name: "Keyboard Forums",
                 url: "https://www.keyboardforums.com/",
-                tag: "Discussion",
                 blurb: "Keyboard players discussing arranger styles, gear, and performance tips across brands.",
                 meta: "keyboardforums.com"
               },
               {
                 name: "YamahaMusicians",
                 url: "https://www.yamahamusicians.com/",
-                tag: "Players & gear",
                 blurb: "Community of Yamaha keyboard musicians sharing tips, songs, and gear talk.",
                 meta: "yamahamusicians.com"
               }
@@ -420,7 +417,6 @@ export function LandingPage({ onLaunchStudio, onOpenDocs }: Props) {
               >
                 <div className="lp-community-card-top">
                   <span className="lp-community-icon" aria-hidden>♪</span>
-                  <span className="lp-community-tag">{c.tag}</span>
                 </div>
                 <h3>{c.name}</h3>
                 <p>{c.blurb}</p>

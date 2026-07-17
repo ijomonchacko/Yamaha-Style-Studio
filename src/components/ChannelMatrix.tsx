@@ -7,7 +7,13 @@ export interface LoadedMidi {
   trackIndex: number;
 }
 
+/**
+ * PSR style channels (1-based display).
+ * Rhythm 1 = Main (MIDI ch 10), Rhythm 2 = Sub (MIDI ch 9), then Bass…Phrase 2.
+ */
 export const STYLE_CHANNELS = [
+  { role: "Rhythm 1", ch: 10 },
+  { role: "Rhythm 2", ch: 9 },
   { role: "Bass",     ch: 11 },
   { role: "Chord 1",  ch: 12 },
   { role: "Chord 2",  ch: 13 },
@@ -17,6 +23,13 @@ export const STYLE_CHANNELS = [
 ] as const;
 
 export type StyleRole = typeof STYLE_CHANNELS[number]["role"];
+
+/** Map UI role → CASM / export ChannelDef role names */
+export function styleRoleToCasmRole(role: StyleRole): string {
+  if (role === "Rhythm 1") return "Rhythm Main";
+  if (role === "Rhythm 2") return "Rhythm Sub";
+  return role;
+}
 
 interface Props {
   midis: LoadedMidi[];
@@ -38,9 +51,9 @@ export function ChannelMatrix({ midis, assignments, onChange, onRemove, onTrackC
       <div className="flex items-center justify-between gap-3 mb-3">
         <div>
           <div className="card-title">Channel routing</div>
-          <div className="card-desc">Map MIDI sources → PSR channels 11–16</div>
+          <div className="card-desc">Map MIDI sources → Rhythm 1/2 + channels 11–16</div>
         </div>
-        <span className="pill pill-muted">{midis.length} source · {takenRoles.size}/6 routed</span>
+        <span className="pill pill-muted">{midis.length} source · {takenRoles.size}/8 routed</span>
       </div>
 
       {midis.length === 0 ? (

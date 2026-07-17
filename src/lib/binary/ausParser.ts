@@ -78,8 +78,8 @@ export interface AusParseResult {
 /** Tags that must be preserved when we bake the .sty file. */
 const AUDIO_TAGS = [
   "AUDI", "MInt", "SPCC", "SdBS", "SdIx", "SdWv", "AInf",
-  // Real Audio Phraser exports (PSR-SX / Genos) use AASM/AWav/Afmt/Adat
-  "AASM", "AWav", "Afmt", "Adat", "Sfmt", "SPnt", "BPnt", "APnt", "CASM"
+  // Real Audio Phraser / forum Live Audio: AASM + AFil (waveform) or AWav/Afmt/Adat
+  "AASM", "AFil", "AWav", "Afmt", "Adat", "Sfmt", "SPnt", "BPnt", "APnt", "CASM"
 ];
 
 /**

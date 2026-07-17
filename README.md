@@ -1,6 +1,6 @@
 # Yamaha Style Studio
 
-Browser app to design, edit, and export **Yamaha PSR-SX / Genos** arranger styles from Live Audio Styles (`.aus`) and MIDI.
+Browser app to design, edit, and export **Yamaha PSR-SX / Genos / SX920** arranger styles from Live Audio Styles (`.aus`) and MIDI.
 
 Files never leave your device — all parse / compile runs client-side.
 
@@ -11,34 +11,47 @@ npm install
 npm run dev
 ```
 
-Open the studio route, then:
-
 1. Drop a **`.aus`** (Audio Phraser) or open an existing **`.sty`**
-2. Drop **`.mid`** files (multi-track SMFs expand to multiple lanes)
-3. Route Bass / Chord / Pad / Phrase → channels 11–16
-4. Preview, edit piano roll, set name / tempo / sections
-5. **Compile** → **Download `.sty`** → USB → Style → User
+2. Optionally drop **`.mid`** files onto timeline lanes (Bass / Chord / Pad / Phrase)
+3. Preview, set name / tempo
+4. **Compile .sty** → **Download** → USB → Style → User
 
-Project files: **Save / Load** (`.yssproj`) or autosave in IndexedDB. Shortcuts: `Space` play/stop · `Ctrl/Cmd+Z` undo · `Ctrl/Cmd+S` save project.
-
-## Keyboard export (SFF2)
-
-Compiled structure:
+## AUS → STY layout (default)
 
 ```
-MThd/MTrk (SFF2 + SInt + timed section markers + MIDI)
-→ CASM (lifted from AUS when valid, else generated Ctb2)
-→ AASM… audio body (byte-preserved from AUS)
-→ MDB (name, category, tempo)
-→ OTSc (empty One-Touch slots)
+SMF Format 0 (SFF2 + SInt [+ optional timeline MIDI only])
+→ CASM (from your .aus only)
+→ AASM / AFil (Live Audio from your .aus only)
 ```
 
-Export validates structure before download. Prefer **CASM lifted from AUS**. Optional checkbox **Require AUS CASM** blocks generated fallback.
+| Source | Used? |
+|--------|--------|
+| Your `.aus` CASM | Yes |
+| Your `.aus` AASM / AFil / AWav | Yes |
+| Timeline MIDI you assigned | Only if present |
+| Demo / template MIDI channels | **Never** |
+
+- **AUS only** (no MIDI lanes) → pure Live Audio `.sty`
+- **AUS + timeline MIDI** → Live Audio + your parts only
+
+Build log should include:
+
+- `CASM: lifted from AUS only`
+- `Audio (AUS only): AASM→EOF` or `AFil…`
+- `No demo STY MIDI channels included`
+
+### Why not “demo STY + append AUS”?
+
+Older converters inject a full working template style (all 8 channels + CASM) then append AUS audio. That pollutes the file with foreign MIDI and often causes channel clash or wrong CASM pairing. We never do that.
+
+## Keyboard export validation
+
+Export validates structure before download. Prefer **Require source CASM** (on by default).
 
 If the keyboard says **“Data not loaded properly”**:
 
-- Re-export a complete `.aus` from Audio Phraser (with CASM + AASM)
-- Confirm build log shows validation OK and CASM source
+- Re-export a complete `.aus` from Audio Phraser (CASM + AASM/AFil)
+- Confirm build log: CASM from AUS + AASM/AFil audio
 - Copy the full file to FAT32 USB; load from User memory
 
 ## Scripts
@@ -48,13 +61,12 @@ If the keyboard says **“Data not loaded properly”**:
 | `npm run dev` | Vite dev server |
 | `npm run build` | Typecheck + production build |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run test:export` | Fixture structure validation |
+| `npm run test:export` | Fixture + structure tests |
 
 ## Targets & limits
 
-- **Targets:** PSR-SX / Genos-class SFF2 audio styles
-- **Sections:** markers + per-lane section assignment; one AUS audio body for the style
-- **Not full multipad / OTS designer** — empty OTSc slots only
+- **Targets:** PSR-SX / Genos / SX920 SFF2 Live Audio styles
+- **Sections:** timeline section pills; CASM Sdec aligned when lifted from AUS
 - Preview uses GM SoundFonts (`smplr`); offline needs network once for fonts
 
 ## License

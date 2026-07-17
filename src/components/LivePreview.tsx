@@ -81,6 +81,8 @@ interface Props {
   onSwingRole?: (role: StyleRole) => void;
   onHumanizeRole?: (role: StyleRole) => void;
   enabledSections?: StyleSection[];
+  /** Hide Live Audio PCM lane (STY-only projects with no AASM) */
+  showLiveAudioLane?: boolean;
 }
 
 const SECTIONS = [
@@ -131,13 +133,16 @@ export function LivePreview(props: Props) {
   const handlePlay = async () => {
     const eng = props.ensureEngine();
     await eng.unlock();
-    if (props.decodedPcm && !eng.getLoadedPcm()) {
+    // Always re-install current PCM so a previous file never keeps playing
+    if (props.decodedPcm) {
       eng.loadPcm(
         props.decodedPcm.pcm,
         props.decodedPcm.sampleRate,
         props.decodedPcm.channels,
         props.ausMeta?.bpm ?? state.bpm
       );
+    } else {
+      eng.clearPcm();
     }
     await eng.play();
   };
@@ -158,9 +163,14 @@ export function LivePreview(props: Props) {
           Yamaha Style Studio · {title}
         </div>
         <div className="daw-title-actions">
-          {props.ausMeta && (
+          {props.ausMeta && props.showLiveAudioLane !== false && (
             <span className="daw-chip soft">
               Live Audio · {props.ausMeta.bpm} BPM · {props.ausMeta.bars} bar{props.ausMeta.bars === 1 ? "" : "s"}
+            </span>
+          )}
+          {props.showLiveAudioLane === false && (
+            <span className="daw-chip soft">
+              MIDI style · {props.projectBpm ?? state.bpm} BPM · {props.loopBars} bar{props.loopBars === 1 ? "" : "s"}
             </span>
           )}
           {state.sfStatus === "loading" && <span className="daw-chip">Loading sounds…</span>}
@@ -305,38 +315,40 @@ export function LivePreview(props: Props) {
 
           {/* Tracks */}
           <div className="daw-tracks">
-            <DawTrack
-              label="Live Audio"
-              channel={props.decodedPcm
-                ? `${props.decodedPcm.channels}ch · ${props.decodedPcm.durationSec.toFixed(2)}s`
-                : props.audio?.encodedMime ? "decoding…" : "no audio"}
-              color="#3ecfff"
-              mute={props.pcmMute}
-              solo={props.pcmSolo}
-              onMute={props.onPcmMute}
-              onSolo={props.onPcmSolo}
-              active={!!props.decodedPcm}
-              droppable={false}
-              onDrop={() => {}}
-            >
-              <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 4 }}>
-                <Waveform
-                  pcm={props.decodedPcm?.pcm ?? null}
-                  channels={props.decodedPcm?.channels ?? 1}
-                  playhead={playhead}
-                  playing={state.playing}
-                  bars={bars}
-                  height={48}
-                  color="#3ecfff"
-                  onSeek={props.onSeekRatio}
-                />
-                <SpectrumMeter
-                  level={state.playing && props.decodedPcm ? 0.55 + playhead * 0.2 : 0.15}
-                  color="#3ecfff"
-                  height={18}
-                />
-              </div>
-            </DawTrack>
+            {props.showLiveAudioLane !== false && (
+              <DawTrack
+                label="Live Audio"
+                channel={props.decodedPcm
+                  ? `${props.decodedPcm.channels}ch · ${props.decodedPcm.durationSec.toFixed(2)}s`
+                  : props.audio?.encodedMime ? "decoding…" : "no audio"}
+                color="#3ecfff"
+                mute={props.pcmMute}
+                solo={props.pcmSolo}
+                onMute={props.onPcmMute}
+                onSolo={props.onPcmSolo}
+                active={!!props.decodedPcm}
+                droppable={false}
+                onDrop={() => {}}
+              >
+                <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 4 }}>
+                  <Waveform
+                    pcm={props.decodedPcm?.pcm ?? null}
+                    channels={props.decodedPcm?.channels ?? 1}
+                    playhead={playhead}
+                    playing={state.playing}
+                    bars={bars}
+                    height={48}
+                    color="#3ecfff"
+                    onSeek={props.onSeekRatio}
+                  />
+                  <SpectrumMeter
+                    level={state.playing && props.decodedPcm ? 0.55 + playhead * 0.2 : 0.15}
+                    color="#3ecfff"
+                    height={18}
+                  />
+                </div>
+              </DawTrack>
+            )}
 
             {props.rolePickers.map(rp => {
               const sound = findSound(rp.soundId);
@@ -534,21 +546,12 @@ function DawTrack(props: DawTrackProps) {
         <div className="daw-track-ch">{props.channel}</div>
         {props.hint && <div className="daw-track-file" title={props.hint}>{props.hint}</div>}
         {props.onSoundChange && props.sound && props.soundGroups && (
-          <select
-            className="daw-sound"
-            value={props.sound.id}
-            onChange={(e) => props.onSoundChange?.(e.target.value)}
-          >
-            {props.soundGroups.map(g => (
-              <optgroup key={g.category} label={g.category}>
-                {g.sounds.map(s => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}{s.bank === "XG" ? " · XG" : ""}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          <SoundKitPicker
+            sound={props.sound}
+            groups={props.soundGroups}
+            isDrum={props.label === "Rhythm 1" || props.label === "Rhythm 2"}
+            onChange={props.onSoundChange}
+          />
         )}
         {props.onSection && (
           <select
@@ -686,13 +689,84 @@ function StopGlyph() {
   );
 }
 
+/** Compact sound / kit picker (replaces plain <select>) */
+function SoundKitPicker({
+  sound,
+  groups,
+  isDrum,
+  onChange
+}: {
+  sound: StyleSound;
+  groups: { category: string; sounds: StyleSound[] }[];
+  isDrum?: boolean;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const list = isDrum
+    ? groups.filter(g => g.category === "Drums")
+    : groups.filter(g => g.category !== "Drums");
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  return (
+    <div className="daw-sound-picker" ref={ref}>
+      <button
+        type="button"
+        className="daw-sound-trigger"
+        onClick={() => setOpen(v => !v)}
+        title={isDrum ? "Drum kit" : "Sound"}
+      >
+        <span className="daw-sound-trigger-label">{isDrum ? "Kit" : "Sound"}</span>
+        <span className="daw-sound-trigger-value">
+          {sound.name}
+          {sound.bank === "XG" ? " · XG" : ""}
+        </span>
+        <span className="daw-sound-chevron" aria-hidden>▾</span>
+      </button>
+      {open && (
+        <div className="daw-sound-menu" role="listbox">
+          {list.map(g => (
+            <div key={g.category} className="daw-sound-group">
+              <div className="daw-sound-group-h">{g.category}</div>
+              {g.sounds.map(s => (
+                <button
+                  key={s.id}
+                  type="button"
+                  className={`daw-sound-opt ${s.id === sound.id ? "is-on" : ""}`}
+                  onClick={() => {
+                    onChange(s.id);
+                    setOpen(false);
+                  }}
+                >
+                  <span>{s.name}</span>
+                  <span className="daw-sound-opt-meta">{s.bank}</span>
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export const ROLE_COLORS: Record<StyleRole, string> = {
+  "Rhythm 1": "#f5b942",
+  "Rhythm 2": "#eab308",
   "Bass":     "#fb923c",
   "Chord 1":  "#3ecfff",
   "Chord 2":  "#38bdf8",
   "Pad":      "#a78bfa",
   "Phrase 1": "#f472b6",
-  "Phrase 2": "#f5b942"
+  "Phrase 2": "#34d399"
 };
 
 export function roleToEngineChannel(role: StyleRole): number {

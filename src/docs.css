@@ -4,9 +4,15 @@
   background: #f4f5f7;
   color: #0a0a0a;
   font-family: Inter, "Noto Sans", system-ui, sans-serif;
+  /* Ensure sticky TOC is relative to viewport scroll, not a nested scroller */
+  overflow: visible;
 }
 .docs-root .docs-layout {
-  padding-top: 8px;
+  padding-top: 12px;
+  overflow: visible;
+}
+.docs-sec {
+  scroll-margin-top: 96px;
 }
 .docs-root ::selection {
   background: rgba(12, 12, 12, 0.14);
@@ -70,16 +76,17 @@
 .docs-layout {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 28px clamp(20px, 6vw, 120px) 80px;
+  padding: 20px clamp(16px, 4vw, 48px) 80px;
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  gap: 36px;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 28px;
   align-items: start;
 }
 @media (max-width: 960px) {
   .docs-layout { grid-template-columns: 1fr; }
   .docs-toc {
     position: static !important;
+    max-height: none !important;
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
@@ -87,12 +94,19 @@
   }
   .docs-toc-title { width: 100%; }
   .docs-toc-item { width: auto !important; }
-  .docs-toc-cta { width: 100% !important; margin-top: 8px; }
+  .docs-toc-cta,
+  .docs-toc-cta-secondary { width: 100% !important; margin-top: 8px; }
 }
 .docs-toc {
+  position: -webkit-sticky;
   position: sticky;
-  top: 88px;
-  padding: 18px 16px;
+  top: 72px;
+  max-height: calc(100vh - 88px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 16px 14px;
   border-radius: 16px;
   background: #fff;
   border: 1px solid rgba(0, 0, 0, 0.07);
@@ -100,6 +114,23 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  align-self: start;
+  z-index: 5;
+  scroll-behavior: smooth;
+  will-change: auto;
+}
+.docs-toc-item.on {
+  position: relative;
+}
+.docs-toc-item.on::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 999px;
+  background: #0c0c0c;
 }
 .docs-toc-title {
   font-size: 11px;
@@ -121,11 +152,12 @@
   color: #3f3f46;
   font-size: 13px;
   font-family: Inter, sans-serif;
-  padding: 8px 10px;
+  padding: 8px 10px 8px 12px;
   border-radius: 8px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
   line-height: 1.35;
+  position: relative;
 }
 .docs-toc-item:hover {
   background: rgba(0, 0, 0, 0.04);

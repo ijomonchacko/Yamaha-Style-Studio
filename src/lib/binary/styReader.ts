@@ -4,7 +4,7 @@
 
 import { parseAus, AusParseResult } from "./ausParser";
 import { Bytes, readFourCC } from "./bytes";
-import { parseMidi, ParsedMidi } from "./midiParser";
+import { parseMidi, ParsedMidi, splitMidiByChannel } from "./midiParser";
 import {
   extractAudioBody,
   extractCasmFromAus,
@@ -44,8 +44,13 @@ export function parseSty(raw: Bytes): OpenedStyle {
   const smfEnd = findSmfEnd(raw);
   if (smfEnd < 0) throw new Error("Could not parse SMF block in .sty.");
 
-  const midi = parseMidi(raw.subarray(0, smfEnd));
-  log.push(`SMF: format ${midi.format}, ${midi.tracks.length} tracks, ${midi.ticksPerQuarter} TPQ`);
+  const midiRaw = parseMidi(raw.subarray(0, smfEnd));
+  // SMF-0 / multi-timbral single MTrk → one track per style channel (Rhy1/2, Bass…)
+  const midi = splitMidiByChannel(midiRaw);
+  log.push(
+    `SMF: format ${midiRaw.format}, ${midiRaw.tracks.length} track(s) → ` +
+    `${midi.tracks.length} channel part(s), ${midi.ticksPerQuarter} TPQ`
+  );
 
   const sections: StyleSection[] = [];
   let name = "Opened Style";
@@ -92,14 +97,22 @@ export function parseSty(raw: Bytes): OpenedStyle {
   };
 }
 
+/**
+ * Suggest a StyleRole from 0-based MIDI channels used on a track.
+ * Yamaha style: ch 8 = Rhythm Sub (Rhy2), ch 9 = Rhythm Main (Rhy1), 10–15 = Bass…Phrase 2.
+ */
 export function suggestRoleForTrack(trackIndex: number, channelsUsed: number[]): string {
-  const ch = channelsUsed[0] ?? (9 + trackIndex);
-  if (ch === 10 || ch === 9) return "Bass";
+  const ch = channelsUsed[0] ?? (8 + Math.max(0, trackIndex - 1));
+  if (ch === 8) return "Rhythm 2";
+  if (ch === 9) return "Rhythm 1";
+  if (ch === 10) return "Bass";
   if (ch === 11) return "Chord 1";
   if (ch === 12) return "Chord 2";
   if (ch === 13) return "Pad";
   if (ch === 14) return "Phrase 1";
   if (ch === 15) return "Phrase 2";
-  const roles = ["Bass", "Chord 1", "Chord 2", "Pad", "Phrase 1", "Phrase 2"];
+  const roles = [
+    "Rhythm 1", "Rhythm 2", "Bass", "Chord 1", "Chord 2", "Pad", "Phrase 1", "Phrase 2"
+  ];
   return roles[Math.min(roles.length - 1, Math.max(0, trackIndex - 1))] ?? "Bass";
 }

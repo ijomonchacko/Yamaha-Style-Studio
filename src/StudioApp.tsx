@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DropZone } from "./components/DropZone";
-import { AusInspector } from "./components/AusInspector";
-import { ChannelMatrix, LoadedMidi, STYLE_CHANNELS, StyleRole } from "./components/ChannelMatrix";
+import {
+  LoadedMidi,
+  STYLE_CHANNELS,
+  StyleRole,
+  styleRoleToCasmRole
+} from "./components/ChannelMatrix";
 import { StyleMetadataForm, StyleMetaState } from "./components/StyleMetadataForm";
 import { ExportPanel } from "./components/ExportPanel";
 import { KeySnapState, LivePreview, ROLE_COLORS, roleToEngineChannel } from "./components/LivePreview";
 import { AusParseResult, parseAus } from "./lib/binary/ausParser";
-import { MidiEvent, parseMidi } from "./lib/binary/midiParser";
+import { buildSmf1, MidiEvent, parseMidi, remapTrackChannel } from "./lib/binary/midiParser";
 import { downloadBytes, fileToBytes } from "./lib/binary/bytes";
 import { AssignedTrack, buildStyle, StyleBuildResult, styleChannelToMidi } from "./lib/binary/styleStitcher";
 import { parseSty, suggestRoleForTrack } from "./lib/binary/styReader";
@@ -29,17 +33,21 @@ import {
   autosaveProject,
   b64ToBytes,
   bytesToB64,
+  clearAutosave,
   downloadProjectFile,
+  hasAnyAutosave,
   loadAutosave,
-  ProjectSnapshot,
-  readProjectFile
+  ProjectSnapshot
 } from "./lib/project/projectStore";
+import { extractCasmFromAus, extractAudioBody } from "./lib/binary/sff2Writer";
 import { useInView } from "./hooks/useInView";
 import "./studio.css";
 
+export type StudioMode = "aus" | "sty";
+
 interface StudioAppProps {
-  /** Home navigation is handled by App SiteNav */
   onBackHome?: () => void;
+  onOpenDocs?: () => void;
 }
 
 /**
@@ -48,7 +56,9 @@ interface StudioAppProps {
  *   - Role assignments, style metadata, PlaybackEngine, compile result.
  * All parsing runs client-side.
  */
-export function StudioApp(_props: StudioAppProps) {
+export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
+  /** null = mode picker; never auto-restore previous project into wrong mode */
+  const [studioMode, setStudioMode] = useState<StudioMode | null>(null);
   const [ausName, setAusName] = useState<string | null>(null);
   const [ausParsed, setAusParsed] = useState<AusParseResult | null>(null);
   const [midis, setMidis] = useState<LoadedMidi[]>([]);
@@ -87,7 +97,8 @@ export function StudioApp(_props: StudioAppProps) {
   const [rolePans, setRolePans] = useState<Partial<Record<StyleRole, number>>>({});
   const [roleSections, setRoleSections] = useState<Partial<Record<StyleRole, StyleSection>>>({});
   const [activeSection, setActiveSection] = useState<string>("Main A");
-  const [requireAusCasm, setRequireAusCasm] = useState(false);
+  /** Fail-closed: only export with real CASM from source file */
+  const [requireAusCasm, setRequireAusCasm] = useState(true);
   const [exportWarnings, setExportWarnings] = useState<string[]>([]);
   const undoStack = useRef<{ midis: LoadedMidi[]; assignments: Record<number, StyleRole | "unassigned"> }[]>([]);
   const ausBytesRef = useRef<Uint8Array | null>(null);
@@ -145,7 +156,20 @@ export function StudioApp(_props: StudioAppProps) {
 
   // ---- File intake ------------------------------------------------------
 
+  /** Stop transport + clear PCM/MIDI so previous file never keeps playing. */
+  const resetEngineAndSession = useCallback(() => {
+    engineRef.current?.resetForNewFile();
+    setDecodedPcm(null);
+    setResult(null);
+    setExportWarnings([]);
+    setMuteRoles({});
+    setSoloRoles({});
+  }, []);
+
   const applyAusBytes = useCallback((bytes: Uint8Array, name: string) => {
+    resetEngineAndSession();
+    setMidis([]);
+    setAssignments({});
     const parsed = parseAus(bytes);
     ausBytesRef.current = bytes;
     setAusName(name);
@@ -159,16 +183,18 @@ export function StudioApp(_props: StudioAppProps) {
     engineRef.current?.setBpm(parsed.meta.bpm);
     const hasAudio =
       parsed.audioChunks.some(c =>
-        c.id === "AASM" || c.id === "AWav" || c.id === "AUDI" || c.id === "Adat"
+        c.id === "AASM" || c.id === "AFil" || c.id === "AWav" || c.id === "AUDI" || c.id === "Adat"
       ) || !!parsed.audio;
     if (!hasAudio) {
       setError(
-        "AUS loaded but no AASM/AWav/AUDI/Adat audio body was found. " +
+        "AUS loaded but no AASM/AFil/AWav/AUDI/Adat audio body was found. " +
         "Keyboard export will fail with “Data not loaded properly”. Re-export from Audio Phraser."
       );
+    } else {
+      setError(null);
     }
     return parsed;
-  }, []);
+  }, [resetEngineAndSession]);
 
   const onAusDrop = async (files: File[]) => {
     const file =
@@ -177,11 +203,17 @@ export function StudioApp(_props: StudioAppProps) {
       files[0];
     if (!file) return;
     setError(null);
-    setResult(null);
-    setDecodedPcm(null);
     try {
       const bytes = await fileToBytes(file);
       const lower = file.name.toLowerCase();
+      if (studioMode === "aus" && lower.endsWith(".sty")) {
+        setError("AUS Editor only accepts .aus (Live Audio Style). Switch to STY Editor for .sty files.");
+        return;
+      }
+      if (studioMode === "sty" && lower.endsWith(".aus")) {
+        setError("STY Editor only accepts .sty. Switch to AUS Editor for Live Audio .aus files.");
+        return;
+      }
       if (lower.endsWith(".sty")) {
         await openStyBytes(bytes, file.name);
         return;
@@ -193,6 +225,7 @@ export function StudioApp(_props: StudioAppProps) {
   };
 
   const openStyBytes = async (bytes: Uint8Array, name: string) => {
+    resetEngineAndSession();
     const opened = parseSty(bytes);
     ausBytesRef.current = bytes;
     setAusName(name);
@@ -207,23 +240,41 @@ export function StudioApp(_props: StudioAppProps) {
     }));
     engineRef.current?.setBpm(opened.bpm);
 
-    // Import non-conductor tracks as MIDI sources
-    const styleTracks = opened.midi.tracks.slice(1).filter(t =>
-      t.events.some(e => e.kind === "note-on" && e.velocity > 0)
-    );
-    const loaded: LoadedMidi[] = styleTracks.slice(0, 6).map((t, i) => {
+    // Channel-split parts (SMF-0 multi-timbral or SMF-1 tracks). Do NOT skip track 0 —
+    // Yamaha format-0 styles put ALL channels on a single MTrk.
+    const styleTracks = opened.midi.tracks
+      .map((t, idx) => ({ t, idx }))
+      .filter(({ t }) => t.events.some(e => e.kind === "note-on" && e.velocity > 0));
+
+    // Prefer style channels 8–15; cap at 8 lanes for the UI
+    const prioritized = [...styleTracks].sort((a, b) => {
+      const ca = a.t.channelsUsed[0] ?? 99;
+      const cb = b.t.channelsUsed[0] ?? 99;
+      const score = (c: number) => (c >= 8 && c <= 15 ? c : 100 + c);
+      return score(ca) - score(cb);
+    });
+
+    const loaded: LoadedMidi[] = prioritized.slice(0, 8).map(({ t, idx }) => {
+      const lengthTicks = Math.max(
+        opened.midi.lengthTicks,
+        t.events.reduce((mx, e) => (e.tick > mx ? e.tick : mx), 0)
+      );
+      const ch = t.channelsUsed[0] ?? 0;
       const smf = {
         format: 1 as const,
         ticksPerQuarter: opened.midi.ticksPerQuarter,
-        tracks: [t],
+        tracks: [{ ...t, index: 0, channelsUsed: [ch] }],
         tempoBpm: opened.bpm,
         timeSigNumerator: opened.timeSigNum,
         timeSigDenominator: opened.timeSigDen,
-        lengthTicks: t.events[t.events.length - 1]?.tick ?? 0
+        lengthTicks
       };
+      // Rebuild minimal SMF bytes so project save/restore keeps the track
+      const payload = remapTrackChannel(t, ch);
+      const smfBytes = buildSmf1([payload], opened.midi.ticksPerQuarter);
       return {
-        name: t.name || `Track ${i + 1}`,
-        bytes: new Uint8Array(0),
+        name: t.name || `Track ${idx + 1}`,
+        bytes: smfBytes,
         parsed: smf,
         trackIndex: 0
       };
@@ -232,19 +283,36 @@ export function StudioApp(_props: StudioAppProps) {
     const nextAssign: Record<number, StyleRole | "unassigned"> = {};
     const taken = new Set<StyleRole>();
     loaded.forEach((m, i) => {
-      const suggested = suggestRoleForTrack(i + 1, m.parsed.tracks[0]?.channelsUsed ?? []) as StyleRole;
-      const role = (!taken.has(suggested) ? suggested : STYLE_CHANNELS.map(s => s.role).find(r => !taken.has(r))) as StyleRole | undefined;
+      const chs = m.parsed.tracks[0]?.channelsUsed ?? [];
+      const suggested = suggestRoleForTrack(i + 1, chs) as StyleRole;
+      const valid = STYLE_CHANNELS.some(s => s.role === suggested) ? suggested : undefined;
+      const role = (
+        valid && !taken.has(valid)
+          ? valid
+          : STYLE_CHANNELS.map(s => s.role).find(r => !taken.has(r))
+      ) as StyleRole | undefined;
       if (role) {
         nextAssign[i] = role;
         taken.add(role);
       } else nextAssign[i] = "unassigned";
     });
     setAssignments(nextAssign);
-    setExportWarnings(opened.log);
-    if (!opened.hasAudio) {
-      setError("Opened .sty has no AASM/AWav audio body — re-export may fail on keyboard.");
+    setExportWarnings([
+      ...opened.log,
+      loaded.length
+        ? `Imported ${loaded.length} MIDI track(s) into timeline (Rhythm 1/2 + style parts).`
+        : "No note-on MIDI tracks found in .sty (audio-only or empty SMF)."
+    ]);
+    // MIDI-only STY is normal — no error, no empty Live Audio lane
+    if (!opened.hasAudio && !loaded.length) {
+      setError("Opened .sty has no MIDI notes and no Live Audio body — nothing to preview.");
     } else {
       setError(null);
+    }
+    // Ensure no leftover PCM from a previous AUS session
+    if (!opened.hasAudio) {
+      setDecodedPcm(null);
+      engineRef.current?.clearPcm();
     }
   };
 
@@ -335,19 +403,6 @@ export function StudioApp(_props: StudioAppProps) {
     });
   };
 
-  const removeMidi = (idx: number) => {
-    setMidis(prev => prev.filter((_, i) => i !== idx));
-    setAssignments(a => {
-      const next: typeof a = {};
-      const keys = Object.keys(a).map(Number).sort((x, y) => x - y);
-      for (const k of keys) {
-        if (k === idx) continue;
-        next[k > idx ? k - 1 : k] = a[k];
-      }
-      return next;
-    });
-  };
-
   /** Live preview drop → assign an existing loaded MIDI to a role, or ingest a new file. */
   const onLiveDropRole = async (role: StyleRole, files: File[]) => {
     // Parse first file (roles are 1:1)
@@ -412,7 +467,7 @@ export function StudioApp(_props: StudioAppProps) {
         sourceName: m.name,
         track,
         targetChannel: sc.ch,
-        role: role as AssignedTrack["role"],
+        role: styleRoleToCasmRole(role as StyleRole) as AssignedTrack["role"],
         program: sound.program,
         bankMsb: sound.msb,
         bankLsb: sound.lsb,
@@ -438,15 +493,21 @@ export function StudioApp(_props: StudioAppProps) {
   const loopLenTicks = useMemo(() => {
     const tpq = midis[0]?.parsed.ticksPerQuarter ?? 480;
     const bar = tpq * (meta.timeSigNum || 4);
-    // Prefer the AUS-declared bar count when present, so the drum loop and
-    // grid line up even when no MIDI has been dropped yet.
+    // Prefer AUS bar count for Live Audio loops; for opened .sty MIDI, use full SMF span
+    // so section markers / long arrangements are not clipped to a tiny AUS meta.bars.
     const ausBars = ausParsed?.meta.bars ?? 0;
-    let maxTick = ausBars > 0 ? ausBars * bar : 0;
+    let maxTick = 0;
     for (const at of assignedTracks) {
-      const last = at.track.events[at.track.events.length - 1];
-      if (last && last.tick > maxTick) maxTick = last.tick;
+      for (const e of at.track.events) {
+        if (e.tick > maxTick) maxTick = e.tick;
+      }
     }
-    return Math.max(bar, Math.ceil(maxTick / bar) * bar || bar);
+    for (const m of midis) {
+      if (m.parsed.lengthTicks > maxTick) maxTick = m.parsed.lengthTicks;
+    }
+    if (maxTick <= 0 && ausBars > 0) maxTick = ausBars * bar;
+    // At least one bar; snap up to whole bars
+    return Math.max(bar, Math.ceil(Math.max(maxTick, bar) / bar) * bar);
   }, [assignedTracks, midis, ausParsed, meta.timeSigNum]);
 
   const loopBars = useMemo(() => {
@@ -591,7 +652,12 @@ export function StudioApp(_props: StudioAppProps) {
   // raw PCM; older layouts may embed Ogg/WAV inside AUDI.
   useEffect(() => {
     const eng = engineRef.current;
-    if (!eng || !ausParsed?.audio) return;
+    if (!eng) return;
+    if (!ausParsed?.audio) {
+      eng.clearPcm();
+      setDecodedPcm(null);
+      return;
+    }
     const audio = ausParsed.audio;
     let cancelled = false;
 
@@ -614,14 +680,15 @@ export function StudioApp(_props: StudioAppProps) {
           const dec = eng.getLoadedPcm();
           if (dec) setDecodedPcm(dec);
         } else {
+          eng.clearPcm();
           if (!cancelled) {
-            setError("AUS has no playable audio (no Adat/Afmt or AUDI container found).");
             setDecodedPcm(null);
           }
           return;
         }
         eng.setBpm(meta.bpm);
       } catch (e) {
+        eng.clearPcm();
         if (!cancelled) {
           setError(`Could not load AUS audio (${audio.encodedMime ?? "pcm"}): ${(e as Error).message}`);
           setDecodedPcm(null);
@@ -652,29 +719,44 @@ export function StudioApp(_props: StudioAppProps) {
 
     for (const at of assignedTracks) {
       const ch = styleChannelToMidi(at.targetChannel);
-      const role = at.role as StyleRole;
-      eng.setChannelMute(ch, !!muteRoles[role]);
-      eng.setChannelSolo(ch, !!soloRoles[role]);
-      if (at.program != null) eng.setStyleProgram(ch, at.program);
+      // Map CASM role / channel back to UI StyleRole for mute/solo state
+      const uiRole = STYLE_CHANNELS.find(s => s.ch === at.targetChannel)?.role;
+      if (uiRole) {
+        eng.setChannelMute(ch, !!muteRoles[uiRole]);
+        eng.setChannelSolo(ch, !!soloRoles[uiRole]);
+      }
+      if (at.program != null && ch !== 8 && ch !== 9) {
+        eng.setStyleProgram(ch, at.program);
+      }
     }
   }, [assignedTracks, midis, engineTick, loopLenTicks, muteRoles, soloRoles]);
 
   // ---- Compile action -------------------------------------------------
 
-  const canCompile = !!ausParsed && assignedTracks.length > 0;
+  // Blank AUS (CASM+AASM, no MIDI) converts to STY; MIDI-only STY can re-export with tail
+  const hasAusAudioBody =
+    !!ausParsed &&
+    (ausParsed.audioChunks.some(c =>
+      c.id === "AASM" || c.id === "AFil" || c.id === "AWav" || c.id === "AUDI" || c.id === "Adat"
+    ) || !!ausParsed.audio || !!(ausBytesRef.current && extractAudioBody(ausBytesRef.current)));
+  const canCompile =
+    !!ausParsed &&
+    (assignedTracks.length > 0 || hasAusAudioBody || studioMode === "sty");
   const compile = () => {
     setError(null);
     setResult(null);
     setExportWarnings([]);
     if (!ausParsed) { setError("Please upload an .aus or .sty file first."); return; }
-    if (assignedTracks.length === 0) { setError("Assign at least one MIDI track to a style channel."); return; }
 
-    const hasAudioChunk =
-      ausParsed.audioChunks.some(c => c.id === "AASM" || c.id === "AWav" || c.id === "AUDI" || c.id === "Adat") ||
-      !!ausParsed.audio;
-    if (!hasAudioChunk) {
+    const blankAus = studioMode === "aus" && assignedTracks.length === 0;
+    if (assignedTracks.length === 0 && !hasAusAudioBody && studioMode !== "sty") {
+      setError("Assign at least one MIDI track to a style channel, or load Live Audio.");
+      return;
+    }
+
+    if (studioMode === "aus" && !hasAusAudioBody) {
       setError(
-        "AUS has no AASM/AWav/AUDI/Adat audio body — keyboard would show “Data not loaded properly”. " +
+        "AUS has no AASM/AFil/AWav audio body — keyboard would show “Data not loaded properly”. " +
         "Re-export the .aus from Audio Phraser and try again."
       );
       return;
@@ -683,15 +765,13 @@ export function StudioApp(_props: StudioAppProps) {
     try {
       const tpq = midis[0]?.parsed.ticksPerQuarter ?? 480;
       const bars = Math.max(1, ausParsed.meta.bars || 4);
-      // Ensure active section is included in export set
       const sections = meta.sections.length ? [...meta.sections] : (["Main A"] as StyleSection[]);
-      if (activeSection && !sections.includes(activeSection as StyleSection)) {
-        // map Fill In UI label
-        const mapped = activeSection === "Fill In" ? "Fill In AA" : activeSection;
-        if (!sections.includes(mapped as StyleSection)) {
-          /* keep meta.sections as user chose */
-        }
-      }
+      // STY re-edit only: keep original CASM/audio tail. AUS path is always forum-safe (no demo MIDI).
+      const preserveTail =
+        studioMode === "sty" && ausBytesRef.current && ausBytesRef.current.length > 64
+          ? ausBytesRef.current
+          : undefined;
+
       const built = buildStyle({
         name: meta.name || "AudioStyle",
         category: meta.category,
@@ -703,12 +783,17 @@ export function StudioApp(_props: StudioAppProps) {
         sectionBars: bars,
         sectionLengthTicks: loopLenTicks,
         aus: ausParsed,
+        // Timeline MIDI only when user assigned lanes — never demo ContempRock parts
         tracks: assignedTracks,
         preferAusCasm: true,
-        requireAusCasm,
-        includeMdb: true,
-        includeOtsc: true,
-        liftAusSetup: true
+        requireAusCasm: requireAusCasm !== false,
+        includeMdb: false,
+        includeOtsc: false,
+        liftAusSetup: true,
+        preservePostSmfFrom: preserveTail,
+        blankAusConvert: blankAus,
+        // Forum-safe: AUS CASM + AASM/AFil only; timeline MIDI if present
+        forumSafe: studioMode === "aus"
       });
       setResult(built);
       setExportWarnings(built.validation.warnings);
@@ -771,28 +856,53 @@ export function StudioApp(_props: StudioAppProps) {
     setResult(null);
   }, [applyAusBytes]);
 
-  // Autosave every 15s when project has content
+  // Mode-isolated autosave (AUS vs STY never overwrite each other)
   useEffect(() => {
+    if (!studioMode) return;
     if (!ausParsed && midis.length === 0) return;
     const t = window.setTimeout(() => {
-      void autosaveProject(buildSnapshot());
+      void autosaveProject(buildSnapshot(), studioMode);
     }, 1500);
     return () => clearTimeout(t);
-  }, [ausParsed, midis, assignments, meta, buildSnapshot]);
+  }, [studioMode, ausParsed, midis, assignments, meta, buildSnapshot]);
 
-  // Offer restore on mount
+  // Do NOT auto-restore — user picks mode first.
+  const [hasAutosave, setHasAutosave] = useState(false);
   useEffect(() => {
     void (async () => {
-      const snap = await loadAutosave();
-      if (snap?.ausB64 || (snap?.midis?.length ?? 0) > 0) {
-        // silent restore only if empty workspace
-        if (!ausParsed && midis.length === 0) {
-          try { await restoreSnapshot(snap!); } catch { /* ignore */ }
+      setHasAutosave(await hasAnyAutosave());
+    })();
+  }, []);
+
+  const enterMode = useCallback(async (mode: StudioMode, restore = false) => {
+    engineRef.current?.resetForNewFile();
+    setDecodedPcm(null);
+    setResult(null);
+    setError(null);
+    setExportWarnings([]);
+    setMuteRoles({});
+    setSoloRoles({});
+    if (!restore) {
+      setAusName(null);
+      setAusParsed(null);
+      setMidis([]);
+      setAssignments({});
+      ausBytesRef.current = null;
+      // Clear only the mode being opened — other mode cache stays
+      await clearAutosave(mode);
+    } else {
+      const snap = await loadAutosave(mode);
+      if (snap) {
+        try {
+          await restoreSnapshot(snap);
+        } catch (e) {
+          setError(`Could not restore session: ${(e as Error).message}`);
         }
       }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    }
+    setStudioMode(mode);
+    setHasAutosave(await hasAnyAutosave());
+  }, [restoreSnapshot]);
 
   // Sync meta BPM → engine
   useEffect(() => {
@@ -938,58 +1048,137 @@ export function StudioApp(_props: StudioAppProps) {
   const stepDone = !!result;
   const footerReveal = useInView<HTMLElement>();
 
+  if (!studioMode) {
+    return (
+      <div className="st-root st-mode-gate-wrap">
+        <header className="st-chrome st-chrome-gate">
+          <div className="st-chrome-inner">
+            <div className="st-chrome-left">
+              <button
+                type="button"
+                className="st-chrome-brand"
+                onClick={onBackHome}
+                aria-label="Home"
+              >
+                <span className="st-chrome-yss">YSS</span>
+              </button>
+              <nav className="st-chrome-links" aria-label="Studio">
+                <button type="button" className="st-chrome-link" onClick={onBackHome}>
+                  Home
+                </button>
+                {onOpenDocs && (
+                  <button type="button" className="st-chrome-link" onClick={onOpenDocs}>
+                    Docs
+                  </button>
+                )}
+              </nav>
+            </div>
+          </div>
+        </header>
+        <div className="st-mode-gate">
+          <div className="st-mode-badge">Yamaha Style Studio</div>
+          <h1 className="st-mode-title">What do you want to open?</h1>
+          <p className="st-mode-lead">
+            Pick one workspace. Sessions stay separate — nothing is auto-loaded from a previous project.
+          </p>
+          <div className="st-mode-cards">
+            <button type="button" className="st-mode-card st-mode-card-aus" onClick={() => void enterMode("aus")}>
+              <span className="st-mode-card-icon">♪</span>
+              <strong>AUS Editor</strong>
+              <span className="st-mode-card-file">.aus</span>
+              <span>Live Audio from Audio Phraser + MIDI → keyboard .sty</span>
+              <span className="st-mode-card-cta">Open AUS Editor →</span>
+            </button>
+            <button type="button" className="st-mode-card st-mode-card-sty" onClick={() => void enterMode("sty")}>
+              <span className="st-mode-card-icon">≡</span>
+              <strong>STY Editor</strong>
+              <span className="st-mode-card-file">.sty</span>
+              <span>Open full styles · Rhythm 1/2 · re-edit &amp; re-export</span>
+              <span className="st-mode-card-cta">Open STY Editor →</span>
+            </button>
+          </div>
+          {hasAutosave && (
+            <div className="st-mode-restore">
+              <div className="st-mode-restore-text">
+                <strong>Saved session found</strong>
+                <span>Restore only if you want the previous project back.</span>
+              </div>
+              <div className="st-mode-restore-actions">
+                <button type="button" className="st-btn st-btn-solid" onClick={() => void enterMode("aus", true)}>
+                  Restore · AUS
+                </button>
+                <button type="button" className="st-btn st-btn-solid" onClick={() => void enterMode("sty", true)}>
+                  Restore · STY
+                </button>
+                <button
+                  type="button"
+                  className="st-btn st-btn-ghost"
+                  onClick={() => {
+                    void clearAutosave();
+                    setHasAutosave(false);
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const isStyMode = studioMode === "sty";
+  const hasLiveAudio = !!decodedPcm;
+
   return (
     <div className="st-root">
-      {/* SiteNav is rendered by App (fixed portal) */}
-      <header className="st-nav st-nav-tools">
-        <div className="st-nav-inner">
-          <div className="st-nav-meta hidden sm:flex">
-            <span className="st-pill st-pill-green">PSR-SX & Genos</span>
-            <span className="st-pill">Live Audio · MIDI · Export</span>
+      {/* Single full-width fixed chrome — not a floating pill */}
+      <header className="st-chrome">
+        <div className="st-chrome-inner">
+          <div className="st-chrome-left">
+            <button
+              type="button"
+              className="st-chrome-brand"
+              onClick={onBackHome}
+              aria-label="Yamaha Style Studio — Home"
+              title="Home"
+            >
+              <span className="st-chrome-yss">YSS</span>
+            </button>
+            <nav className="st-chrome-links" aria-label="Studio">
+              <button type="button" className="st-chrome-link" onClick={onBackHome}>
+                Home
+              </button>
+              {onOpenDocs && (
+                <button type="button" className="st-chrome-link" onClick={onOpenDocs}>
+                  Docs
+                </button>
+              )}
+            </nav>
           </div>
 
-          <div className="st-nav-actions">
+          <div className="st-chrome-mid">
+            <span className="st-chrome-mode">
+              {studioMode === "aus" ? "AUS Editor" : "STY Editor"}
+            </span>
             <button
               type="button"
-              className="st-btn st-btn-ghost"
-              title="Undo (Ctrl+Z)"
-              onClick={undo}
+              className="st-mode-switch"
+              onClick={() => setStudioMode(null)}
+              title="Switch AUS / STY workspace"
             >
-              Undo
+              Switch workspace
             </button>
-            <button
-              type="button"
-              className="st-btn st-btn-ghost"
-              title="Save project (Ctrl+S)"
-              onClick={() => downloadProjectFile(buildSnapshot(), meta.name)}
-            >
-              Save
-            </button>
-            <label className="st-btn st-btn-ghost" style={{ cursor: "pointer" }}>
-              Load
-              <input
-                type="file"
-                accept=".yssproj,application/json"
-                className="hidden"
-                onChange={async (e) => {
-                  const f = e.target.files?.[0];
-                  e.target.value = "";
-                  if (!f) return;
-                  try {
-                    const snap = await readProjectFile(f);
-                    await restoreSnapshot(snap);
-                  } catch (err) {
-                    setError(`Project load failed: ${(err as Error).message}`);
-                  }
-                }}
-              />
-            </label>
+          </div>
+
+          <div className="st-chrome-actions">
             <button
               type="button"
               className="st-btn st-btn-solid"
-              onClick={() => document.getElementById("st-daw")?.scrollIntoView({ behavior: "smooth" })}
+              onClick={() => document.getElementById("st-export")?.scrollIntoView({ behavior: "smooth" })}
             >
-              Live Preview
+              Export
             </button>
           </div>
         </div>
@@ -998,18 +1187,28 @@ export function StudioApp(_props: StudioAppProps) {
       <main className="st-main">
         <section className="st-banner">
           <div>
-            <p className="st-banner-kicker anim-page-kicker">Professional style editor</p>
-            <h1 className="st-banner-title anim-page-title">Create, preview & export arranger styles</h1>
+            <p className="st-banner-kicker anim-page-kicker">
+              {isStyMode ? "STY Editor" : "AUS Editor"}
+            </p>
+            <h1 className="st-banner-title anim-page-title">
+              {isStyMode
+                ? "Open, preview & re-export arranger styles"
+                : "Build Live Audio styles for PSR-SX & Genos"}
+            </h1>
             <p className="st-banner-sub anim-page-lead">
-              Load Live Audio Styles, route MIDI channels, edit the piano roll, then compile a keyboard-ready .sty — all in the browser.
+              {isStyMode
+                ? "Drop a .sty file to load Rhythm 1/2 and style MIDI parts. No separate .aus is required unless the style has Live Audio."
+                : "Load a Live Audio Style (.aus), route MIDI to channels 11–16, preview, then export a keyboard-ready .sty."}
             </p>
           </div>
           <div className="st-steps anim-fade-up anim-fade-up-d3">
             <span className={`st-step ${stepAus ? "done" : "active"}`}>
-              <span className="st-step-num">{stepAus ? "✓" : "1"}</span> Load AUS
+              <span className="st-step-num">{stepAus ? "✓" : "1"}</span>
+              {isStyMode ? "Load STY" : "Load AUS"}
             </span>
             <span className={`st-step ${stepMidi ? "done" : stepAus ? "active" : ""}`}>
-              <span className="st-step-num">{stepMidi ? "✓" : "2"}</span> MIDI
+              <span className="st-step-num">{stepMidi ? "✓" : "2"}</span>
+              {isStyMode ? "Parts" : "MIDI"}
             </span>
             <span className={`st-step ${stepReady ? "done" : stepMidi ? "active" : ""}`}>
               <span className="st-step-num">{stepReady ? "✓" : "3"}</span> Studio
@@ -1024,8 +1223,14 @@ export function StudioApp(_props: StudioAppProps) {
           <div className="st-card">
             <div className="st-card-h">
               <div>
-                <h2 className="st-card-title">Live Audio Style · .aus</h2>
-                <p className="st-card-desc">From Yamaha Audio Phraser</p>
+                <h2 className="st-card-title">
+                  {isStyMode ? "Yamaha Style · .sty" : "Live Audio Style · .aus"}
+                </h2>
+                <p className="st-card-desc">
+                  {isStyMode
+                    ? "Full SFF2 style (Rhythm + MIDI parts)"
+                    : "From Yamaha Audio Phraser"}
+                </p>
               </div>
               {ausName
                 ? <span className="st-pill st-pill-green">Loaded</span>
@@ -1033,9 +1238,16 @@ export function StudioApp(_props: StudioAppProps) {
             </div>
             <div className="st-card-b">
               <DropZone
-                label={ausName ?? "Drop .aus or .sty here"}
-                accept=".aus,.sty"
-                hint="AASM / AWav preserved · open .sty to re-edit"
+                label={
+                  ausName
+                    ?? (isStyMode ? "Drop .sty here" : "Drop .aus here")
+                }
+                accept={isStyMode ? ".sty" : ".aus"}
+                hint={
+                  isStyMode
+                    ? "Opens SMF + CASM · Rhythm 1/2 in timeline"
+                    : "AASM / AWav preserved for keyboard load"
+                }
                 loaded={!!ausName}
                 variant="cyan"
                 onFiles={onAusDrop}
@@ -1047,18 +1259,26 @@ export function StudioApp(_props: StudioAppProps) {
             <div className="st-card-h">
               <div>
                 <h2 className="st-card-title">MIDI parts · .mid</h2>
-                <p className="st-card-desc">Bulk import or drop onto DAW lanes</p>
+                <p className="st-card-desc">
+                  {isStyMode
+                    ? "Optional extra MIDI · or use parts from the .sty"
+                    : "Bulk import or drop onto DAW lanes"}
+                </p>
               </div>
               {midis.length > 0
                 ? <span className="st-pill st-pill-violet">{midis.length} file{midis.length === 1 ? "" : "s"}</span>
-                : <span className="st-pill">Optional bulk</span>}
+                : <span className="st-pill">{isStyMode ? "From STY or drop" : "Optional bulk"}</span>}
             </div>
             <div className="st-card-b">
               <DropZone
                 label="Drop .mid file(s) here"
                 accept=".mid,.midi"
                 multiple
-                hint="Bass · Chord · Pad · Phrase → channels 11–16"
+                hint={
+                  isStyMode
+                    ? "Rhythm 1/2 · Bass · Chord · Pad · Phrase"
+                    : "Bass · Chord · Pad · Phrase → channels 11–16"
+                }
                 loaded={midis.length > 0}
                 variant="violet"
                 onFiles={onMidiDrop}
@@ -1068,12 +1288,15 @@ export function StudioApp(_props: StudioAppProps) {
         </section>
 
         <section id="st-daw">
-          <p className="st-section-label">Live Preview · Style Track Mixer</p>
+          <p className="st-section-label">
+            {isStyMode ? "Style Preview · Rhythm & MIDI lanes" : "Live Preview · Style Track Mixer"}
+          </p>
           <LivePreview
             engine={engineRef.current}
-            audio={ausParsed?.audio ?? null}
-            decodedPcm={decodedPcm}
-            ausMeta={ausParsed?.meta ?? null}
+            audio={hasLiveAudio ? (ausParsed?.audio ?? null) : null}
+            decodedPcm={hasLiveAudio ? decodedPcm : null}
+            ausMeta={hasLiveAudio ? (ausParsed?.meta ?? null) : null}
+            showLiveAudioLane={hasLiveAudio || !isStyMode}
             rolePickers={rolePickers}
             loopLengthTicks={loopLenTicks}
             loopBars={loopBars}
@@ -1114,13 +1337,10 @@ export function StudioApp(_props: StudioAppProps) {
           />
         </section>
 
-        <section className="st-grid-settings" id="st-export">
-          <div>
-            <p className="st-section-label">Project settings</p>
+        <section className="st-export-wrap" id="st-export">
+          <p className="st-section-label">Settings & export</p>
+          <div className="st-grid-settings">
             <StyleMetadataForm value={meta} onChange={setMeta} />
-          </div>
-          <div>
-            <p className="st-section-label">Compile & download</p>
             <ExportPanel
               ready={canCompile}
               disabled={!canCompile}
@@ -1131,40 +1351,62 @@ export function StudioApp(_props: StudioAppProps) {
               warnings={exportWarnings}
               requireAusCasm={requireAusCasm}
               onRequireAusCasmChange={setRequireAusCasm}
+              modeLabel={
+                isStyMode
+                  ? "STY re-export"
+                  : assignedTracks.length === 0
+                    ? "AUS only"
+                    : "AUS + timeline MIDI"
+              }
+              checklist={[
+                {
+                  id: "source",
+                  label: isStyMode ? "Style file loaded" : "AUS file loaded",
+                  ok: !!ausParsed
+                },
+                {
+                  id: "casm",
+                  label: "CASM from AUS",
+                  ok: !!(ausBytesRef.current && extractCasmFromAus(ausBytesRef.current)),
+                  detail: requireAusCasm ? "required" : "optional"
+                },
+                {
+                  id: "audio",
+                  label: isStyMode
+                    ? "Audio body (if Live Audio)"
+                    : "AASM / AFil from AUS",
+                  ok: isStyMode
+                    ? true
+                    : !!(ausBytesRef.current && extractAudioBody(ausBytesRef.current))
+                },
+                {
+                  id: "parts",
+                  label:
+                    assignedTracks.length === 0 && !isStyMode
+                      ? "No timeline MIDI"
+                      : "Timeline MIDI (assigned lanes)",
+                  ok: assignedTracks.length > 0 || isStyMode || hasAusAudioBody,
+                  detail:
+                    assignedTracks.length === 0 && !isStyMode
+                      ? "optional"
+                      : `${assignedTracks.length} part(s)`
+                },
+                {
+                  id: "meta",
+                  label: "Name & tempo set",
+                  ok: meta.name.trim().length > 0 && meta.bpm > 0
+                }
+              ]}
             />
           </div>
         </section>
-
-        <details className="st-card st-adv">
-          <summary className="st-card-h">
-            <div>
-              <h2 className="st-card-title">Advanced tools</h2>
-              <p className="st-card-desc">Channel routing matrix · AUS chunk inspector</p>
-            </div>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </summary>
-          <div className="st-card-b space-y-8">
-            <ChannelMatrix
-              midis={midis}
-              assignments={assignments}
-              onChange={(i, r) => setAssignments(a => ({ ...a, [i]: r }))}
-              onRemove={removeMidi}
-              onTrackChange={(i, ti) => setMidis(list => list.map((m, idx) => idx === i ? { ...m, trackIndex: ti } : m))}
-            />
-            <div style={{ borderTop: "1px solid var(--st-line)", paddingTop: "1.5rem" }}>
-              <AusInspector fileName={ausName} parsed={ausParsed} />
-            </div>
-          </div>
-        </details>
 
         <footer
           ref={footerReveal.ref}
           className={`st-footer anim-footer ${footerReveal.inView ? "is-in" : ""}`}
         >
           <div className="anim-footer-col">Private by design · files never leave this device</div>
-          <div className="hex anim-footer-col">SFF2 · SInt · CASM · AASM · AWav</div>
+          <div className="hex anim-footer-col">SFF2 · SInt · CASM · AASM · AFil</div>
         </footer>
       </main>
     </div>

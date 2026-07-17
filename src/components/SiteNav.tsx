@@ -16,19 +16,14 @@ interface Props {
   onPrimary: () => void;
   secondaryLabel?: string;
   onSecondary?: () => void;
-  tone?: "dark" | "white" | "light";
-  /**
-   * Hide navbar once the user scrolls past the top of the page.
-   * On home, also hide as soon as #hero leaves the top of the viewport.
-   */
+  tone?: "dark" | "white" | "light" | "studio";
   hideOnScroll?: boolean;
-  /** Optional hero id — hide when this element is no longer at the top */
   hideWhenPastId?: string;
 }
 
 /**
- * Viewport-fixed floating pill nav (portaled to body).
- * With hideOnScroll: visible only near the top / hero; gone after scroll.
+ * Viewport-fixed full-width nav bar (portaled to document.body).
+ * Edge-to-edge; not a floating pill. Studio uses its own chrome.
  */
 export function SiteNav({
   links,
@@ -56,75 +51,33 @@ export function SiteNav({
     }
 
     let raf = 0;
-
     const computeHidden = (): boolean => {
-      // Any meaningful scroll down → hide (all pages)
-      if (window.scrollY > 32 || document.documentElement.scrollTop > 32) {
-        return true;
-      }
-
+      if (window.scrollY > 32 || document.documentElement.scrollTop > 32) return true;
       if (hideWhenPastId) {
         const hero = document.getElementById(hideWhenPastId);
         if (hero) {
           const rect = hero.getBoundingClientRect();
-          // Hero has scrolled up so its top is well above the bar
-          if (rect.top < -40) return true;
-          // Hero bottom left the top band of the screen
-          if (rect.bottom < 100) return true;
+          if (rect.top < -40 || rect.bottom < 100) return true;
         }
       }
-
       return false;
     };
 
     const update = () => {
       cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        setHidden(computeHidden());
-      });
+      raf = requestAnimationFrame(() => setHidden(computeHidden()));
     };
 
     update();
-
-    // Capture phase + multiple targets so we catch all scroll containers
     const opts: AddEventListenerOptions = { passive: true, capture: true };
     window.addEventListener("scroll", update, opts);
     document.addEventListener("scroll", update, opts);
-    document.body.addEventListener("scroll", update, opts);
     window.addEventListener("resize", update, { passive: true });
-    window.addEventListener("wheel", update, { passive: true });
-    window.addEventListener("touchmove", update, { passive: true });
-
-    let io: IntersectionObserver | null = null;
-    if (hideWhenPastId) {
-      const hero = document.getElementById(hideWhenPastId);
-      if (hero && typeof IntersectionObserver !== "undefined") {
-        io = new IntersectionObserver(
-          ([entry]) => {
-            // Hide when hero is mostly out of the top of the viewport
-            if (!entry.isIntersecting || entry.boundingClientRect.top < -20) {
-              setHidden(true);
-            } else if (window.scrollY <= 32) {
-              setHidden(false);
-            } else {
-              setHidden(true);
-            }
-          },
-          { root: null, threshold: [0, 0.05, 0.15, 0.35, 0.6, 1], rootMargin: "-80px 0px 0px 0px" }
-        );
-        io.observe(hero);
-      }
-    }
-
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener("scroll", update, true);
       document.removeEventListener("scroll", update, true);
-      document.body.removeEventListener("scroll", update, true);
       window.removeEventListener("resize", update);
-      window.removeEventListener("wheel", update);
-      window.removeEventListener("touchmove", update);
-      io?.disconnect();
     };
   }, [hideOnScroll, hideWhenPastId]);
 
@@ -141,7 +94,12 @@ export function SiteNav({
     if (hidden) setOpen(false);
   }, [hidden]);
 
-  const toneClass = tone === "light" || tone === "white" ? "sn-tone-light" : "sn-tone-dark";
+  const toneClass =
+    tone === "studio"
+      ? "sn-tone-studio"
+      : tone === "light" || tone === "white"
+        ? "sn-tone-light"
+        : "sn-tone-dark";
 
   if (!mounted || typeof document === "undefined") return null;
 
@@ -151,8 +109,23 @@ export function SiteNav({
       data-site-nav
       data-hidden={hidden ? "true" : "false"}
       aria-hidden={hidden}
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        width: "100%",
+        maxWidth: "none",
+        zIndex: 2147483646,
+        transform: "none",
+        pointerEvents: "none"
+      }}
     >
-      <nav className="sn-pill" aria-label="Main">
+      <nav
+        className="sn-pill"
+        aria-label="Main"
+        style={{ pointerEvents: "auto", width: "100%", maxWidth: "none", borderRadius: 0 }}
+      >
         <button
           type="button"
           className="sn-logo-plate"
@@ -221,7 +194,7 @@ export function SiteNav({
       </nav>
 
       {open && !hidden && (
-        <div className="sn-drawer">
+        <div className="sn-drawer" style={{ pointerEvents: "auto" }}>
           {links.map(link => (
             <button
               key={link.id}

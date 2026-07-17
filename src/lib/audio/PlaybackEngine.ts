@@ -26,8 +26,11 @@ export interface TransportState {
 }
 
 const CHANNEL_GAIN: Record<number, number> = {
-  10: 0.85, 11: 0.70, 12: 0.70, 13: 0.55, 14: 0.65, 15: 0.65
+  8: 0.9, 9: 0.95, 10: 0.85, 11: 0.70, 12: 0.70, 13: 0.55, 14: 0.65, 15: 0.65
 };
+
+/** GM drum kit instrument id used by smplr FluidR3 */
+const DRUM_KIT_NAME = "standard_kit";
 
 interface LoadedPcm {
   buffer: AudioBuffer;
@@ -123,7 +126,7 @@ export class PlaybackEngine {
     this.pcmGain.gain.value = 0.9;
     this.pcmGain.connect(this.masterGain);
 
-    for (const ch of [10, 11, 12, 13, 14, 15]) {
+    for (const ch of [8, 9, 10, 11, 12, 13, 14, 15]) {
       const g = this.ctx.createGain();
       g.gain.value = CHANNEL_GAIN[ch] ?? 0.6;
       g.connect(this.masterGain);
@@ -151,6 +154,32 @@ export class PlaybackEngine {
       for (let i = 0; i < frameCount; i++) data[i] = pcm[i * chCount + ch] || 0;
     }
     this.installBuffer(buffer, sourceBpm);
+  }
+
+  /** Drop PCM so a previous AUS/STY never keeps looping after a new open. */
+  clearPcm() {
+    if (this.pcmSource) {
+      try { this.pcmSource.stop(); } catch { /* */ }
+      try { this.pcmSource.disconnect(); } catch { /* */ }
+      this.pcmSource = null;
+    }
+    this.pcm = null;
+  }
+
+  /** Full transport + buffer reset when switching files. */
+  resetForNewFile() {
+    this.stop();
+    this.clearPcm();
+    this.tracks = [];
+    this.eventCursor = [];
+    this.styleProgramOverride.clear();
+    this.muted.clear();
+    this.soloed.clear();
+    this.pcmMuted = false;
+    this.pcmSoloed = false;
+    this.isolation = null;
+    this.recomputeGains();
+    this.emit();
   }
 
   async loadEncoded(bytes: Uint8Array, sourceBpm: number): Promise<AudioBuffer> {
@@ -295,6 +324,80 @@ export class PlaybackEngine {
       this.state.sfMessage = (e as Error).message;
     }
     this.emit();
+  }
+
+  private drumInstrument: SoundfontInst | null = null;
+  private drumLoading: Promise<SoundfontInst | null> | null = null;
+
+  private async ensureDrumKit(): Promise<SoundfontInst | null> {
+    if (this.drumInstrument) return this.drumInstrument;
+    if (this.drumLoading) return this.drumLoading;
+    this.drumLoading = (async () => {
+      // smplr FluidR3 names that may resolve to GM percussion / melodic fallback
+      const candidates = [
+        DRUM_KIT_NAME,
+        "standard",
+        "drumkit",
+        "drums",
+        "orchestra_hit",
+        "acoustic_grand_piano"
+      ];
+      for (const instrument of candidates) {
+        try {
+          const inst = Soundfont(this.ctx, {
+            instrument,
+            kit: "FluidR3_GM",
+            destination: this.midiBus,
+            volume: 100
+          });
+          await inst.load;
+          this.drumInstrument = inst;
+          return inst;
+        } catch {
+          /* try next name */
+        }
+      }
+      return null;
+    })().finally(() => {
+      this.drumLoading = null;
+    });
+    return this.drumLoading;
+  }
+
+  /** Always-audible drum hit when SoundFont kit is missing (GM note map → noise/tone). */
+  private playDrumFallback(note: number, velocity: number, when: number, maxDur: number) {
+    const startAt = Math.max(when, this.ctx.currentTime + 0.001);
+    const vel = Math.max(0.05, Math.min(1, velocity / 127));
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, startAt);
+    g.gain.exponentialRampToValueAtTime(0.45 * vel, startAt + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, startAt + Math.min(maxDur, 0.35));
+    g.connect(this.midiBus);
+
+    // Kick-ish vs snare/hat: low notes = sine, mid = noise, high = noise short
+    if (note < 40) {
+      const o = this.ctx.createOscillator();
+      o.type = "sine";
+      o.frequency.setValueAtTime(90, startAt);
+      o.frequency.exponentialRampToValueAtTime(45, startAt + 0.08);
+      o.connect(g);
+      o.start(startAt);
+      o.stop(startAt + Math.min(maxDur, 0.25));
+    } else {
+      const frames = Math.max(64, Math.floor(this.ctx.sampleRate * 0.08));
+      const buf = this.ctx.createBuffer(1, frames, this.ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < frames; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / frames);
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = note > 60 ? "highpass" : "bandpass";
+      bp.frequency.value = note > 60 ? 6000 : 1800;
+      src.connect(bp);
+      bp.connect(g);
+      src.start(startAt);
+      src.stop(startAt + Math.min(maxDur, 0.12));
+    }
   }
 
   private async ensureInstrument(program: number): Promise<SoundfontInst | null> {
@@ -478,8 +581,22 @@ export class PlaybackEngine {
     }
 
     // Ensure instruments for current tracks are loading/ready before first notes.
-    const progs = this.tracks.map(t => t.program);
-    if (progs.length) await this.preloadPrograms(progs);
+    const hasDrums = this.tracks.some(t => t.channel === 8 || t.channel === 9);
+    const melodicProgs = this.tracks
+      .filter(t => t.channel !== 8 && t.channel !== 9)
+      .map(t => t.program);
+    if (melodicProgs.length) await this.preloadPrograms(melodicProgs);
+    if (hasDrums) {
+      this.state.sfStatus = "loading";
+      this.state.sfMessage = "Loading drum kit…";
+      this.emit();
+      await this.ensureDrumKit();
+    }
+    if (!this.tracks.length && !this.pcm) {
+      this.state.sfMessage = "Nothing to play — open a .sty / .aus or drop MIDI.";
+      this.emit();
+      return;
+    }
 
     this.state.playing = true;
     this.loopStartCtxTime = this.ctx.currentTime + 0.08;
@@ -706,6 +823,49 @@ export class PlaybackEngine {
       return;
     }
 
+    // Rhythm lanes (MIDI 8/9 = PSR Rhythm Sub/Main) use drum kit or synth fallback
+    const isDrum = styleChannel === 8 || styleChannel === 9;
+    const startAt = Math.max(when, this.ctx.currentTime + 0.001);
+    let maxDur = 4;
+    if (passReleaseAt != null && Number.isFinite(passReleaseAt)) {
+      maxDur = Math.max(0.02, Math.min(4, passReleaseAt - startAt));
+    }
+    if (maxDur < 0.02) return;
+
+    if (isDrum) {
+      const kit = this.drumInstrument;
+      if (kit) {
+        try {
+          const stopId = `drm:${styleChannel}:${note}:${startAt.toFixed(5)}`;
+          const stop = kit.start({
+            note,
+            velocity: Math.max(1, Math.min(120, velocity)),
+            time: startAt,
+            duration: Math.min(maxDur, 1.2),
+            ampRelease: 0.05,
+            stopId
+          });
+          const key = `${styleChannel}-${note}`;
+          const handle: ActiveStop = {
+            releaseBy: startAt + maxDur,
+            stop: (t?: number) => {
+              try { stop(t ?? this.ctx.currentTime); } catch { /* */ }
+            }
+          };
+          const list = this.activeNotes.get(key);
+          if (list) list.push(handle);
+          else this.activeNotes.set(key, [handle]);
+          return;
+        } catch {
+          /* fall through to synth drums */
+        }
+      } else {
+        void this.ensureDrumKit();
+      }
+      this.playDrumFallback(note, velocity, when, maxDur);
+      return;
+    }
+
     const program =
       this.styleProgramOverride.get(styleChannel)
       ?? this.channelProgram.get(styleChannel)
@@ -716,14 +876,6 @@ export class PlaybackEngine {
       void this.ensureInstrument(program);
       return;
     }
-
-    const startAt = Math.max(when, this.ctx.currentTime + 0.001);
-    // Hold ends at releaseAt; smplr then adds ampRelease after stop.
-    let maxDur = 4;
-    if (passReleaseAt != null && Number.isFinite(passReleaseAt)) {
-      maxDur = Math.max(0.02, Math.min(4, passReleaseAt - startAt));
-    }
-    if (maxDur < 0.02) return;
 
     const key = `${styleChannel}-${note}`;
     const existing = this.activeNotes.get(key);

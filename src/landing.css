@@ -122,9 +122,11 @@
 }
 .lp-video-dim {
   opacity: 0 !important;
+  filter: none;
 }
 .lp-video-root.is-ready .lp-video-dim {
-  opacity: 0.5 !important;
+  opacity: 0.62 !important;
+  filter: contrast(1.06) saturate(1.08);
 }
 .lp-video-canvas {
   opacity: 1;
@@ -136,16 +138,17 @@
   pointer-events: none;
   background: transparent;
 }
-/* Dark SaaS overlay: black/60 → #050505 at bottom */
+/* Dark SaaS overlay — less pale wash, keep video depth */
 .lp-video-scrim-dark {
   background: linear-gradient(
     180deg,
-    rgba(0, 0, 0, 0.55) 0%,
-    rgba(0, 0, 0, 0.4) 35%,
-    rgba(5, 5, 5, 0.75) 72%,
+    rgba(0, 0, 0, 0.35) 0%,
+    rgba(0, 0, 0, 0.22) 40%,
+    rgba(5, 5, 5, 0.55) 78%,
     #050505 100%
   );
 }
+
 .lp-video-scrim-minimal {
   background: linear-gradient(
     180deg,

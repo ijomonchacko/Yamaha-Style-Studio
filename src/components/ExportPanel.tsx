@@ -1,5 +1,12 @@
 import { StyleBuildResult } from "../lib/binary/styleStitcher";
 
+interface ChecklistItem {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail?: string;
+}
+
 interface Props {
   ready: boolean;
   disabled: boolean;
@@ -7,139 +14,162 @@ interface Props {
   onCompile: () => void;
   onDownload: () => void;
   error: string | null;
-  /** Soft warnings before/after compile (CASM policy, etc.). */
   warnings?: string[];
   requireAusCasm?: boolean;
   onRequireAusCasmChange?: (v: boolean) => void;
+  checklist?: ChecklistItem[];
+  modeLabel?: string;
 }
 
+/**
+ * Keyboard export panel.
+ * Layout: SMF Format 0 (SFF2 + SInt) → CASM (AUS) → AASM / AFil (AUS).
+ */
 export function ExportPanel({
-  ready, disabled, result, onCompile, onDownload, error, warnings = [],
-  requireAusCasm, onRequireAusCasmChange
+  ready,
+  disabled,
+  result,
+  onCompile,
+  onDownload,
+  error,
+  warnings = [],
+  requireAusCasm,
+  onRequireAusCasmChange,
+  checklist = [],
+  modeLabel
 }: Props) {
+  const log = result?.log ?? [];
+  const hasTimelineMidi = log.some(l => /Timeline MIDI/i.test(l));
+  const readyCount = checklist.filter(i => i.ok).length;
+  const readyTotal = checklist.length;
+
   return (
-    <div className="card h-full">
-      <div className="card-h">
+    <div className="st-panel export-panel">
+      <div className="st-panel-h">
         <div>
-          <div className="card-title">Export · .sty</div>
-          <div className="card-desc">Compile SFF2 style for PSR-SX / Genos keyboards</div>
+          <h2 className="st-panel-title">Keyboard export</h2>
+          <p className="st-panel-sub">
+            SFF2 · PSR-SX · Genos · SX920
+            {modeLabel ? ` · ${modeLabel}` : ""}
+          </p>
         </div>
-        {ready
-          ? <span className="pill pill-mint">Ready</span>
-          : <span className="pill pill-muted">Need AUS + MIDI</span>}
+        <span className={`export-status ${ready ? "is-ready" : ""}`}>
+          {ready ? "Ready" : "Not ready"}
+        </span>
       </div>
-      <div className="card-b space-y-4">
+
+      <div className="st-panel-body export-panel-body">
+        <div className="export-layout-row">
+          <span className="export-layout-label">Layout</span>
+          <code className="export-layout-chain">
+            SMF F0 → CASM → AASM/AFil
+          </code>
+        </div>
+
+        {checklist.length > 0 && (
+          <div className="export-ready-row">
+            <span className="export-ready-count">
+              {readyCount}/{readyTotal} ready
+            </span>
+            <div className="export-ready-dots" aria-hidden>
+              {checklist.map(item => (
+                <span
+                  key={item.id}
+                  className={item.ok ? "is-on" : ""}
+                  title={item.label}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {onRequireAusCasmChange != null && (
-          <label className="flex items-center gap-2 text-xs muted cursor-pointer">
+          <label className="export-casm-toggle">
             <input
               type="checkbox"
               checked={!!requireAusCasm}
               onChange={(e) => onRequireAusCasmChange(e.target.checked)}
-              style={{ accentColor: "#3ecfff" }}
             />
-            Require AUS CASM (safer on keyboard; uncheck to allow generated CASM)
+            <span>
+              <strong>Require source CASM</strong>
+              <small>Fail if AUS has no CASM — recommended for SX920</small>
+            </span>
           </label>
         )}
 
-        <div className="flex flex-col sm:flex-row gap-2.5">
-          <button className="btn-primary flex-1" onClick={onCompile} disabled={disabled}>
-            <BuildGlyph /> Compile style
+        <div className="export-actions">
+          <button
+            type="button"
+            className="export-btn-primary"
+            onClick={onCompile}
+            disabled={disabled}
+          >
+            Compile .sty
           </button>
-          <button className="btn-accent2 flex-1" onClick={onDownload} disabled={!result}>
-            <DownloadGlyph /> Download .sty
+          <button
+            type="button"
+            className="export-btn-secondary"
+            onClick={onDownload}
+            disabled={!result}
+          >
+            Download
           </button>
         </div>
 
-        {error && <div className="alert-error">{error}</div>}
+        {error && (
+          <div className="export-error">
+            <strong>Export blocked</strong>
+            <p>{error}</p>
+          </div>
+        )}
 
         {warnings.length > 0 && !error && (
-          <div className="alert-info">
-            {warnings.map((w, i) => <div key={i}>{w}</div>)}
+          <div className="export-warn">
+            {warnings.slice(0, 3).map((w, i) => (
+              <div key={i}>{w}</div>
+            ))}
           </div>
         )}
 
-        {result && (
-          <div className="space-y-3 anim-in">
-            <div className="alert-ok">
-              Style compiled and validated. Copy to USB → Style → User / Expansion.
-              {result.casmSource === "generated" && (
-                <> CASM was <strong>generated</strong> — re-export AUS with CASM if the keyboard rejects the file.</>
-              )}
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-              <Stat label="SMF" value={fmt(result.smfSize)} />
-              <Stat label="CASM" value={`${fmt(result.casmSize)}${result.casmSource === "aus" ? " · AUS" : " · gen"}`} />
-              <Stat label="Audio" value={fmt(result.audioSize)} />
-              <Stat label="MDB" value={fmt(result.mdbSize)} />
-              <Stat label="OTSc" value={fmt(result.otscSize)} />
-              <Stat label="Total" value={fmt(result.styBytes.length)} accent />
-            </div>
-
-            {result.validation.warnings.length > 0 && (
-              <details open>
-                <summary className="text-xs muted cursor-pointer">Preflight checks</summary>
-                <ul className="text-[11px] muted mt-2 space-y-1 pl-4 list-disc">
-                  {result.validation.ok && <li className="text-emerald-300">Structure OK (SFF2/SInt · CASM · audio)</li>}
-                  {result.validation.warnings.map((w, i) => (
-                    <li key={i}>{w}</li>
-                  ))}
-                </ul>
+        <div className={`export-result-slot ${result ? "has-result" : ""}`}>
+          {result ? (
+            <>
+              <div className="export-result-line">
+                <span className="export-result-dot" />
+                <span className="export-result-text">
+                  {result.validation.ok ? "Validated" : "Issues"}
+                  <em>
+                    {result.casmSource === "aus" ? " · CASM AUS" : " · CASM gen"}
+                    {hasTimelineMidi ? " · MIDI" : " · Live Audio"}
+                  </em>
+                </span>
+                <span className="export-result-total">{fmt(result.styBytes.length)}</span>
+              </div>
+              <div className="export-stats">
+                <div><span>SMF</span><b>{fmt(result.smfSize)}</b></div>
+                <div><span>CASM</span><b>{fmt(result.casmSize)}</b></div>
+                <div><span>Audio</span><b>{fmt(result.audioSize)}</b></div>
+                <div><span>Total</span><b>{fmt(result.styBytes.length)}</b></div>
+              </div>
+              <details className="export-log">
+                <summary>Build log</summary>
+                <pre>{result.log.join("\n")}</pre>
               </details>
-            )}
-
-            <details>
-              <summary className="text-xs muted cursor-pointer hover:text-frost-200 transition list-none">
-                <span className="lane-btn">View build log</span>
-              </summary>
-              <pre className="hex mt-3 p-3.5 rounded-xl text-[11px] overflow-x-auto whitespace-pre-wrap leading-relaxed"
-                style={{ background: "rgba(0,0,0,0.35)", border: "1px solid var(--border)" }}>
-{result.log.join("\n")}
-              </pre>
-            </details>
-          </div>
-        )}
-
-        {!result && !error && (
-          <div className="alert-info">
-            <strong className="text-cyan-soft">Workflow:</strong>{" "}
-            Drop <span className="hex text-accent">.aus</span> / open <span className="hex">.sty</span> →
-            assign MIDI → set name/tempo → Compile → Download
-          </div>
-        )}
+            </>
+          ) : (
+            <p className="export-idle-line">
+              Compile builds SMF + CASM + Live Audio from your source.
+              Timeline MIDI only if lanes are assigned.
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
-  return (
-    <div className="stat-box" style={accent ? { borderColor: "rgba(62,207,255,0.3)", background: "rgba(62,207,255,0.06)" } : undefined}>
-      <div className="label">{label}</div>
-      <div className="value" style={accent ? { color: "#7ddfff" } : undefined}>{value}</div>
-    </div>
-  );
-}
-
-function fmt(n: number) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
-}
-
-function BuildGlyph() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-      <path d="M14.7 6.3a5 5 0 1 0 3 3l4.6 4.6-3 3-4.6-4.6a5 5 0 0 0-3-3z" />
-    </svg>
-  );
-}
-
-function DownloadGlyph() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-      <path d="M12 3v12" strokeLinecap="round" />
-      <path d="M7 10l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M4 21h16" strokeLinecap="round" />
-    </svg>
-  );
+function fmt(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
 }

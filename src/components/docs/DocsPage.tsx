@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { useInView } from "../../hooks/useInView";
 import "../../docs.css";
 
@@ -27,6 +27,7 @@ const TOC: TocItem[] = [
   { id: "midi-parts", label: "6 · Add MIDI style parts" },
   { id: "preview-edit", label: "7 · Preview & edit" },
   { id: "export-sty", label: "8 · Compile & load on keyboard" },
+  { id: "export-layout", label: "9 · STY layout (technical)" },
   { id: "checklist", label: "Quick checklist" },
   { id: "troubleshooting", label: "Troubleshooting" }
 ];
@@ -34,38 +35,119 @@ const TOC: TocItem[] = [
 export function DocsPage({ onHome, onLaunchStudio }: Props) {
   const [active, setActive] = useState<string>("overview");
   const footerReveal = useInView<HTMLElement>();
+  const tocItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const tocAsideRef = useRef<HTMLElement | null>(null);
 
+  // Track which section is in view — highlight + scroll TOC to match
   useEffect(() => {
     const ids = TOC.map(t => t.id);
+    const elements = ids
+      .map(id => document.getElementById(id))
+      .filter((el): el is HTMLElement => !!el);
+    if (!elements.length) return;
+
+    const visible = new Map<string, number>();
+    const observer = new IntersectionObserver(
+      entries => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            visible.set(entry.target.id, entry.intersectionRatio);
+          } else {
+            visible.delete(entry.target.id);
+          }
+        }
+        // Prefer the top-most section still intersecting under the nav
+        let bestId = ids[0];
+        let bestTop = Number.POSITIVE_INFINITY;
+        for (const id of ids) {
+          if (!visible.has(id)) continue;
+          const el = document.getElementById(id);
+          if (!el) continue;
+          const top = el.getBoundingClientRect().top;
+          // Sections that have crossed under the fixed nav win
+          if (top <= 140 && top < bestTop) {
+            bestTop = top;
+            bestId = id;
+          }
+        }
+        // Fallback: first visible if none crossed the nav line yet
+        if (bestTop === Number.POSITIVE_INFINITY) {
+          for (const id of ids) {
+            if (visible.has(id)) {
+              bestId = id;
+              break;
+            }
+          }
+        }
+        setActive(prev => (prev === bestId ? prev : bestId));
+      },
+      {
+        root: null,
+        rootMargin: "-80px 0px -55% 0px",
+        threshold: [0, 0.1, 0.25, 0.5, 1]
+      }
+    );
+
+    for (const el of elements) observer.observe(el);
+
+    // Also listen to scroll for immediate updates (IO can lag)
     const onScroll = () => {
       let current = ids[0];
       for (const id of ids) {
         const el = document.getElementById(id);
         if (!el) continue;
-        const top = el.getBoundingClientRect().top;
-        if (top <= 120) current = id;
+        if (el.getBoundingClientRect().top <= 120) current = id;
       }
-      setActive(current);
+      setActive(prev => (prev === current ? prev : current));
     };
     window.addEventListener("scroll", onScroll, { passive: true });
+    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
     onScroll();
-    return () => window.removeEventListener("scroll", onScroll);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("scroll", onScroll);
+      document.removeEventListener("scroll", onScroll, true);
+    };
   }, []);
 
+  // Keep active TOC item visible inside the sticky sidebar
+  useEffect(() => {
+    const btn = tocItemRefs.current[active];
+    const aside = tocAsideRef.current;
+    if (!btn || !aside) return;
+    const btnTop = btn.offsetTop;
+    const btnBottom = btnTop + btn.offsetHeight;
+    const viewTop = aside.scrollTop;
+    const viewBottom = viewTop + aside.clientHeight;
+    if (btnTop < viewTop + 8) {
+      aside.scrollTo({ top: Math.max(0, btnTop - 24), behavior: "smooth" });
+    } else if (btnBottom > viewBottom - 8) {
+      aside.scrollTo({ top: btnBottom - aside.clientHeight + 24, behavior: "smooth" });
+    }
+  }, [active]);
+
   const scrollTo = (id: string) => {
-    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setActive(id);
+    const el = document.getElementById(id);
+    if (!el) return;
+    const y = el.getBoundingClientRect().top + window.scrollY - 88;
+    window.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
   };
 
   return (
     <div className="docs-root">
       {/* SiteNav is rendered by App (fixed portal) */}
       <div className="docs-layout sn-page-pad">
-        <aside className="docs-toc">
+        <aside ref={tocAsideRef} className="docs-toc" aria-label="Guide sections">
           <div className="docs-toc-title">Guide</div>
           {TOC.map(item => (
             <button
               key={item.id}
               type="button"
+              ref={el => {
+                tocItemRefs.current[item.id] = el;
+              }}
               className={[
                 "docs-toc-item",
                 active === item.id ? "on" : "",
@@ -78,6 +160,9 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
               <span>{item.label}</span>
             </button>
           ))}
+          <button type="button" className="docs-btn docs-btn-solid docs-toc-cta" onClick={onLaunchStudio}>
+            Launch Studio
+          </button>
         </aside>
 
         <article className="docs-content">
@@ -411,7 +496,7 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
                 Live Audio track in the DAW preview.
               </li>
               <li>
-                Check the Advanced inspector (optional) for chunks like AWav, Adat, AInf — confirms a valid export.
+                Confirm the export checklist shows CASM + AASM before compiling.
               </li>
             </ol>
             <p>
@@ -468,8 +553,10 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
           <section id="export-sty" className="docs-sec">
             <h2>8 · Compile &amp; load on the keyboard</h2>
             <ol className="docs-steps">
-              <li>Set style name, category, BPM, and sections under Project settings.</li>
-              <li>Click <strong>Compile style</strong> then <strong>Download .sty</strong>.</li>
+              <li>Set style name, category, and BPM under Style settings.</li>
+              <li>
+                Click <strong>Compile .sty</strong> then <strong>Download</strong>.
+              </li>
               <li>
                 Copy the file to a USB stick (FAT32 recommended for many Yamaha models).
               </li>
@@ -477,16 +564,64 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
                 On the keyboard: insert USB → Style → User / Expansion → load the style.
               </li>
               <li>
-                Play left-hand chords and start Main A. You should hear Live Audio drums + MIDI parts.
+                Play left-hand chords and start Main A. You should hear Live Audio drums + any timeline MIDI.
               </li>
             </ol>
             <div className="docs-callout">
               <strong>What the exporter builds</strong>
               <p>
-                SMF conductor with SFF2 / SInt markers → CASM (from AUS when present) → full AASM audio body.
-                That structure is what keeps PSR-SX / Genos from rejecting the file.
+                <code>SMF Format 0</code> (SFF2 + SInt) → <code>CASM</code> from your .aus only →
+                <code>AASM</code> / <code>AFil</code> audio from your .aus only.
+                Timeline MIDI is added <em>only</em> if you assigned lanes — never a demo-style graft.
               </p>
             </div>
+          </section>
+
+          <section id="export-layout" className="docs-sec">
+            <h2>9 · STY layout (technical)</h2>
+            <p>
+              Live Audio styles for PSR-SX / Genos / SX920 use this post-SMF chunk order:
+            </p>
+            <div className="docs-callout">
+              <strong>Chunk order</strong>
+              <p>
+                <code>MThd</code> → <code>MTrk</code> → <code>CASM</code> → <code>AASM</code> →{" "}
+                <code>AFil</code> (waveform) → optional <code>OTSc</code>
+              </p>
+            </div>
+            <p>
+              Older converters often took a working demo <code>.sty</code> and appended AUS audio.
+              That keeps the demo’s MIDI on all channels and pollutes the style. Style Studio does not do that.
+            </p>
+            <h3>Source rules</h3>
+            <ol className="docs-steps">
+              <li>
+                <strong>CASM</strong> — lifted only from your Audio Phraser <code>.aus</code> (required by default).
+              </li>
+              <li>
+                <strong>Audio</strong> — <code>AASM</code> and/or <code>AFil</code> / <code>AWav</code> from the same .aus only.
+              </li>
+              <li>
+                <strong>SMF</strong> — Format 0 conductor with SFF2 + SInt. Bass/Chord/Pad/Phrase from the timeline
+                are merged only if assigned. Otherwise export is Live Audio only.
+              </li>
+              <li>
+                <strong>Never</strong> copy MIDI or CASM from a template / demo style.
+              </li>
+            </ol>
+            <div className="docs-tip">
+              <strong>Compile modes</strong>
+              <p>
+                <strong>AUS only</strong> — no timeline MIDI; pure Live Audio convert.
+                <br />
+                <strong>AUS + timeline MIDI</strong> — your assigned lanes only.
+              </p>
+            </div>
+            <p>
+              In the build log look for: <em>CASM: lifted from AUS only</em>,{" "}
+              <em>Audio (AUS only)</em>, and{" "}
+              <em>No demo STY MIDI channels included</em> (or timeline MIDI lines for your lanes).
+            </p>
           </section>
 
           <section id="checklist" className="docs-sec">
@@ -500,11 +635,11 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
                 "BPM, time signature, and bar count match the audio exactly",
                 "Loop start/end locked to downbeats; metronome stays in time",
                 "No heavy time-stretch in Audio Phraser (prefer DAW warp if needed)",
-                ".aus exported successfully from Audio Phraser",
-                ".aus loaded in Yamaha Style Studio with visible waveform",
-                "MIDI parts assigned to Bass / Chord / Pad / Phrase",
-                "Preview sounds balanced; key / fill applied if needed",
-                ".sty compiled and tested on keyboard via USB"
+                ".aus exported with CASM + AASM (and AFil when present)",
+                ".aus loaded in Yamaha Style Studio",
+                "Optional: MIDI on timeline (Bass / Chord / Pad / Phrase) — not required for blank convert",
+                "Compile .sty — log shows CASM from AUS, no demo graft",
+                ".sty copied full to FAT32 USB and tested on keyboard"
               ].map(item => (
                 <label key={item} className="docs-check-item">
                   <span className="docs-check-box" />
@@ -523,11 +658,19 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
                   The keyboard rejected the <code>.sty</code> structure. Fix checklist:
                 </p>
                 <ul>
-                  <li>Use a complete Audio Phraser <code>.aus</code> (must contain AASM/AWav audio and ideally CASM).</li>
-                  <li>Compile again in Style Studio — export now validates SFF2/SInt markers, CASM, and audio body before download.</li>
-                  <li>In the build log, prefer <strong>CASM: lifted from .aus</strong>. If it says generated, re-export the AUS from Audio Phraser with CASM intact.</li>
-                  <li>Copy the full file to USB (FAT32), load under Style → User / Expansion (not a truncated copy).</li>
+                  <li>Use a complete Audio Phraser <code>.aus</code> (CASM + AASM and/or AFil).</li>
+                  <li>Use <strong>Compile .sty</strong> — not a demo-template graft.</li>
+                  <li>Build log must show <strong>CASM: lifted from AUS only</strong> (not generated).</li>
+                  <li>Build log must show <strong>Audio (AUS only)</strong> / AASM or AFil — not empty.</li>
+                  <li>Copy the full file to USB (FAT32), load under Style → User / Expansion.</li>
                 </ul>
+              </div>
+              <div>
+                <h3>Style plays extra bass/chords I never wrote</h3>
+                <p>
+                  That is the classic demo-STY graft bug. Old converters paste foreign MIDI into your file.
+                  Re-compile here; only your timeline lanes (if any) are included.
+                </p>
               </div>
               <div>
                 <h3>Drums sound muddy or full of vocals</h3>
@@ -562,7 +705,7 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
                 <h3>AUS won’t load in the studio</h3>
                 <p>
                   Confirm the file ends with <code>.aus</code> and was exported by Audio Phraser. Try a
-                  different browser if decode fails. Check the Advanced AUS inspector for warnings.
+                  different browser if decode fails. Re-export the .aus from Audio Phraser if load still fails.
                 </p>
               </div>
             </div>

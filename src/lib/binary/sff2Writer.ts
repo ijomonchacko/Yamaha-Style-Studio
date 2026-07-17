@@ -89,7 +89,7 @@ export const FULL_SECTION_LIST: StyleSection[] = [
 
 /** Known top-level style chunks after the SMF block. */
 const STYLE_TOP_TAGS = new Set([
-  "CASM", "OTSc", "MDB ", "AASM", "AWav", "AUDI", "FNRc", "MTRK", "CSEG"
+  "CASM", "OTSc", "MDB ", "AASM", "AWav", "AFil", "AUDI", "FNRc", "MTRK", "CSEG"
 ]);
 
 export interface StyleTopChunk {
@@ -169,7 +169,8 @@ function isPlausibleFourCC(id: string): boolean {
 }
 
 function scanNextTopTag(buf: Bytes, from: number): number {
-  const tags = ["CASM", "OTSc", "MDB ", "AASM", "AWav", "AUDI", "FNRc"];
+  // AFil = forum Live Audio waveform chunk (with AASM descriptor)
+  const tags = ["CASM", "OTSc", "MDB ", "AASM", "AWav", "AFil", "AUDI", "FNRc"];
   let best = -1;
   for (const t of tags) {
     const i = findFourCCOffset(buf, t, from);
@@ -407,22 +408,87 @@ export function isValidCasm(casm: Bytes): boolean {
   return hasCseg && hasSdec && hasTable;
 }
 
+const SDEC_NAME_MAP: Record<string, StyleSection> = {
+  "Main A": "Main A", "Main B": "Main B", "Main C": "Main C", "Main D": "Main D",
+  "Intro A": "Intro A", "Intro B": "Intro B", "Intro C": "Intro C",
+  "Ending A": "Ending A", "Ending B": "Ending B", "Ending C": "Ending C",
+  "Fill In AA": "Fill In AA", "Fill In BB": "Fill In BB",
+  "Fill In CC": "Fill In CC", "Fill In DD": "Fill In DD",
+  "Fill In BA": "Break", "Break": "Break"
+};
+
 /**
- * Audio body for SFF2 styles: everything from AASM (preferred) or AWav to EOF.
- * Uses post-SMF top-level walk so MIDI false positives are ignored.
+ * Read section names from the first Sdec inside a CASM block.
+ * SX920 rejects styles when SMF section markers do not match CASM Sdec.
+ */
+export function extractSectionsFromCasm(casm: Bytes): StyleSection[] {
+  if (!isValidCasm(casm)) return [];
+  const size = readU32BE(casm, 4);
+  const end = Math.min(casm.length, 8 + size);
+  let p = 8;
+  while (p + 8 <= end) {
+    const id = readFourCC(casm, p);
+    const sz = readU32BE(casm, p + 4);
+    if (sz > end - (p + 8)) break;
+    if (id === "CSEG") {
+      let q = p + 8;
+      const qend = p + 8 + sz;
+      while (q + 8 <= qend) {
+        const nid = readFourCC(casm, q);
+        const nsz = readU32BE(casm, q + 4);
+        if (nsz > qend - (q + 8)) break;
+        if (nid === "Sdec" && nsz > 0) {
+          const text = new TextDecoder("latin1").decode(casm.subarray(q + 8, q + 8 + nsz));
+          const out: StyleSection[] = [];
+          for (const part of text.split(/[,;\0]+/)) {
+            const name = part.trim();
+            if (!name) continue;
+            const mapped = SDEC_NAME_MAP[name];
+            if (mapped && !out.includes(mapped)) out.push(mapped);
+          }
+          return out;
+        }
+        q += 8 + nsz;
+      }
+    }
+    p += 8 + sz;
+  }
+  return [];
+}
+
+/**
+ * True when buffer already looks like a loadable SFF2 style (blank AUS → STY copy).
+ */
+export function isCompleteStyleCarrier(buf: Bytes): boolean {
+  if (buf.length < 64 || readFourCC(buf, 0) !== "MThd") return false;
+  const smfEnd = findEffectiveSmfEnd(buf);
+  if (smfEnd < 0) return false;
+  const smfRegion = buf.subarray(0, Math.min(smfEnd + 64, buf.length));
+  const hasSff2 = containsAscii(smfRegion, "SFF2") || containsAscii(smfRegion, "SFF1");
+  const hasSInt = containsAscii(smfRegion, "SInt");
+  const casm = extractCasmFromAus(buf);
+  const audio = extractAudioBody(buf) ?? extractForumAudioBody(buf);
+  return hasSff2 && hasSInt && !!casm && isValidCasm(casm) && !!audio && audio.body.length >= 64;
+}
+
+/**
+ * Audio body for Live Audio styles (forum + SX920):
+ *   Prefer AASM…EOF (includes AFil / AWav / AInf trailers)
+ *   Else AFil…EOF, AWav, AUDI
+ * Uses post-SMF walk first so MIDI false positives are ignored.
  */
 export function extractAudioBody(ausRaw: Bytes): { body: Bytes; source: string } | null {
   const tops = walkStyleTopChunks(ausRaw);
-  for (const prefer of ["AASM", "AWav", "AUDI"] as const) {
+  for (const prefer of ["AASM", "AFil", "AWav", "AUDI"] as const) {
     const hit = tops.find(c => c.id === prefer);
     if (hit) {
-      // Take from this chunk through EOF — real styles keep trailing AInf etc.
+      // From this chunk through EOF — forum styles: AASM then AFil; SX: AASM/AWav…
       return { body: ausRaw.subarray(hit.offset), source: `${prefer}→EOF` };
     }
   }
 
-  // Fallback substring search with size sanity (legacy / partial containers).
-  for (const prefer of ["AASM", "AWav", "AUDI"] as const) {
+  // Fallback scan (AUS may have odd nesting / short MTrk length).
+  for (const prefer of ["AASM", "AFil", "AWav", "AUDI"] as const) {
     const off = findFourCCOffset(ausRaw, prefer);
     if (off >= 0 && off + 8 <= ausRaw.length) {
       return { body: ausRaw.subarray(off), source: `${prefer}→EOF (scan)` };
@@ -432,26 +498,75 @@ export function extractAudioBody(ausRaw: Bytes): { body: Bytes; source: string }
 }
 
 /**
- * Prefer a proven CASM block embedded in the source .aus (post-SMF only).
+ * Forum-safe audio only: AASM (+ following AFil/AWav) without OTSc/MDB/FNRc before it.
+ * Returns null if no Live Audio chunks found.
+ */
+export function extractForumAudioBody(ausRaw: Bytes): { body: Bytes; source: string } | null {
+  // Prefer contiguous AASM…EOF (includes AFil when present after AASM)
+  const aasm = findFourCCOffset(ausRaw, "AASM");
+  if (aasm >= 0 && aasm + 8 <= ausRaw.length) {
+    const size = readU32BE(ausRaw, aasm + 4);
+    // If size is sane and next sibling is AFil, still take AASM→EOF (cleanest)
+    if (size >= 0 && aasm + 8 + size <= ausRaw.length) {
+      return { body: ausRaw.subarray(aasm), source: "AASM→EOF (forum)" };
+    }
+    return { body: ausRaw.subarray(aasm), source: "AASM→EOF (forum-scan)" };
+  }
+  const afil = findFourCCOffset(ausRaw, "AFil");
+  if (afil >= 0) return { body: ausRaw.subarray(afil), source: "AFil→EOF (forum)" };
+  return extractAudioBody(ausRaw);
+}
+
+/**
+ * Prefer a proven CASM block embedded in the source .aus/.sty.
+ * Scans whole file (some working styles place CASM before declared SMF end).
  */
 export function extractCasmFromAus(ausRaw: Bytes): Bytes | null {
   const tops = walkStyleTopChunks(ausRaw);
   const casm = tops.find(c => c.id === "CASM");
   if (casm && isValidCasm(casm.full)) return casm.full;
 
-  // Fallback: first valid CASM in the whole buffer (skips MIDI false hits).
+  // Prefer the longest valid CASM (real tables beat MIDI false positives).
+  let best: Bytes | null = null;
   let from = 0;
   while (from < ausRaw.length) {
     const off = findFourCCOffset(ausRaw, "CASM", from);
-    if (off < 0) return null;
+    if (off < 0) break;
     const size = readU32BE(ausRaw, off + 4);
-    if (size > 0 && size <= ausRaw.length - (off + 8)) {
+    if (size > 0 && size <= ausRaw.length - (off + 8) && size < ausRaw.length) {
       const full = ausRaw.subarray(off, off + 8 + size);
-      if (isValidCasm(full)) return full;
+      if (isValidCasm(full) && (!best || full.length > best.length)) {
+        best = full;
+      }
     }
     from = off + 1;
   }
-  return null;
+  return best;
+}
+
+/**
+ * Effective end of SMF for stitching: if a valid CASM starts before findSmfEnd
+ * (common on real Live Audio styles), use CASM offset so we don't swallow CASM into SMF.
+ */
+export function findEffectiveSmfEnd(buf: Bytes): number {
+  const smfEnd = findSmfEnd(buf);
+  let from = 0;
+  let casmOff = -1;
+  while (from < buf.length) {
+    const off = findFourCCOffset(buf, "CASM", from);
+    if (off < 0) break;
+    const size = readU32BE(buf, off + 4);
+    if (size > 40 && size <= buf.length - (off + 8)) {
+      const full = buf.subarray(off, off + 8 + size);
+      if (isValidCasm(full)) {
+        casmOff = off;
+        break;
+      }
+    }
+    from = off + 1;
+  }
+  if (casmOff >= 0 && (smfEnd < 0 || casmOff < smfEnd)) return casmOff;
+  return smfEnd;
 }
 
 /**
@@ -495,25 +610,41 @@ export function validateStyleBytes(sty: Bytes): StyleValidation {
   if (!hasSInt) errors.push('Missing required marker "SInt" in conductor track.');
 
   const tops = walkStyleTopChunks(sty);
-  const casmChunk = tops.find(c => c.id === "CASM");
-  const hasCasm = !!casmChunk && isValidCasm(casmChunk.full);
-  if (!casmChunk) {
+  let casmChunk = tops.find(c => c.id === "CASM");
+  // Some working Live Audio styles place CASM before declared SMF end — accept scan.
+  let hasCasm = !!casmChunk && isValidCasm(casmChunk.full);
+  if (!hasCasm) {
+    const scanned = extractCasmFromAus(sty);
+    if (scanned && isValidCasm(scanned)) {
+      hasCasm = true;
+      const off = findFourCCOffset(sty, "CASM");
+      if (off >= 0) {
+        casmChunk = { id: "CASM", offset: off, size: readU32BE(sty, off + 4), full: scanned };
+      }
+      warnings.push("CASM found via scan (before declared SMF end) — common on Live Audio styles.");
+    }
+  }
+  if (!casmChunk && !hasCasm) {
     errors.push("Missing CASM chunk after SMF — keyboard will show “Data not loaded properly”.");
   } else if (!hasCasm) {
     errors.push("CASM chunk is present but malformed (need CSEG → Sdec + Ctb2/Ctab).");
   }
 
-  const audioChunk = tops.find(c => c.id === "AASM" || c.id === "AWav" || c.id === "AUDI");
-  const hasAudio = !!audioChunk && audioChunk.full.length >= 32;
+  const audioChunk = tops.find(
+    c => c.id === "AASM" || c.id === "AFil" || c.id === "AWav" || c.id === "AUDI"
+  );
+  let hasAudio = !!audioChunk && audioChunk.full.length >= 32;
   if (!hasAudio) {
-    // Also accept AASM→EOF body even if size field is odd.
     const body = extractAudioBody(sty);
-    if (!body || body.body.length < 32) {
-      errors.push("Missing AASM/AWav/AUDI audio body — keyboard will reject the style.");
-    }
+    hasAudio = !!(body && body.body.length >= 32);
+  }
+  if (!hasAudio) {
+    warnings.push(
+      "No AASM/AFil/AWav/AUDI audio body — OK for MIDI-only styles; Live Audio needs AASM/AFil from .aus."
+    );
   }
 
-  // Order check: CASM should appear before audio.
+  // Order check: CASM should appear before audio when both are top-level walked.
   if (casmChunk && audioChunk && casmChunk.offset > audioChunk.offset) {
     errors.push("Invalid order: audio body appears before CASM.");
   }

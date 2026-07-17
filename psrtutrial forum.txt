@@ -1,0 +1,26 @@
+Hi all,
+considered as follow:
+1) Audio Phraser: MIDI parts. When exported, this data will be stored as blank data by this software.
+2) From Guests are not allowed to view links. In order to access the links, please Register or Login, an audio style file has the following chunks (in order):
+
+    Type    Purpose
+    ----    ------------------------------------
+    MThd    SMF header chunk
+    MTrk    SMF track chunk
+    CASM    Yamaha CASM chunk
+    AASM    Audio assembly (descriptor) chunk
+    AFil    Audio file (waveform) chunk
+    OTSc    Yamaha OTS chunk
+The AASM and AFil chunks are new, additional chunks beyond the known MIDI, CASM and OTS chunks.
+
+We can use hex editor.
+a) change the audiostyle from .aus in .sty
+b) load the style and use style creator with assembly function to reassign the midi data as your taste
+c) save it on usb. the file will be .aus
+d) in hex editor open the two files and copy the AASM and AFil chunks in the .aus file you saved in the pont c).
+e) copy from .sty the header MThd until Sint.
+f) save the modified file as .sty
+
+Now you can use this as a style with wav part embedded.
+
+best regards.

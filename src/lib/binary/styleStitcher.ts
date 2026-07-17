@@ -1,24 +1,24 @@
 /**
  * Style stitcher — builds a keyboard-loadable SFF2 .sty from .aus + MIDI.
  *
- * Layout:
- *   MThd + MTrk (conductor: SFF2 / SInt + timed section markers)
- *   [ style MIDI tracks ]
- *   CASM (from AUS when valid, else generated Ctb2)
- *   AASM… audio body
- *   MDB  (name / category / tempo)
- *   OTSc (empty One-Touch slots)
+ * Forum-safe path (psr tutorial):
+ *   SMF Format 0 (SFF2 + SInt [+ optional timeline MIDI only])
+ *   → CASM from AUS only (never a demo STY body)
+ *   → AASM + AFil/AWav audio from AUS only
+ *
+ * Never grafts ContempRock/demo MIDI channels into the export.
  */
 
 import { AusParseResult } from "./ausParser";
 import { Bytes, concat, readFourCC, readU32BE, writeVLQ } from "./bytes";
 import {
-  buildSmf1, MidiEvent, MidiTrack, remapTrackChannel
+  buildSmf0, MidiEvent, MidiTrack, remapTrackChannel
 } from "./midiParser";
 import {
   buildCasm, buildMdb, buildOtsc, ChannelDef, DEFAULT_CHANNELS, extractAudioBody,
-  extractCasmFromAus, findSmfEnd, FULL_SECTION_LIST, isValidCasm, StyleSection,
-  validateStyleBytes, StyleValidation, yamahaSectionCode
+  extractCasmFromAus, extractForumAudioBody, extractSectionsFromCasm,
+  findEffectiveSmfEnd, findSmfEnd, FULL_SECTION_LIST, isCompleteStyleCarrier,
+  isValidCasm, StyleSection, validateStyleBytes, StyleValidation, yamahaSectionCode
 } from "./sff2Writer";
 
 export interface AssignedTrack {
@@ -63,6 +63,23 @@ export interface StyleBuildOptions {
   sectionBars?: number;
   /** Lift setup sysex from AUS SMF conductor when present (default true). */
   liftAusSetup?: boolean;
+  /**
+   * When re-exporting an opened .sty, keep post-SMF chunks (CASM/AASM/MDB/OTSc)
+   * byte-for-byte from the original file. Only the SMF block is rebuilt.
+   */
+  preservePostSmfFrom?: Bytes;
+  /**
+   * Blank AUS → STY: when true (or auto when no MIDI tracks), prefer a byte-stable
+   * conversion that keeps the Audio Phraser SMF + CASM + AASM intact.
+   */
+  blankAusConvert?: boolean;
+  /**
+   * Forum-safe convert (default true for AUS path):
+   * - CASM + AASM/AFil only from the opened .aus
+   * - zero demo-template MIDI
+   * - timeline MIDI parts included only when provided in `tracks`
+   */
+  forumSafe?: boolean;
 }
 
 export interface StyleBuildResult {
@@ -85,13 +102,125 @@ export function buildStyle(opts: StyleBuildOptions): StyleBuildResult {
   const log: string[] = [];
   const channels = opts.channels ?? DEFAULT_CHANNELS;
   const preferAusCasm = opts.preferAusCasm !== false;
-  const requireAusCasm = opts.requireAusCasm === true;
+  // Default true: refuse export without real CASM (avoids keyboard “Data not loaded”)
+  const requireAusCasm = opts.requireAusCasm !== false;
   const includeMdb = opts.includeMdb !== false;
   const includeOtsc = opts.includeOtsc !== false;
   const liftAusSetup = opts.liftAusSetup !== false;
+  const forumSafe = opts.forumSafe !== false;
   const tpq = Math.max(1, opts.ticksPerQuarter || 480);
   const ticksPerBar = Math.round(tpq * opts.timeSigNum * (4 / Math.max(1, opts.timeSigDen)));
   const ausBars = Math.max(1, opts.sectionBars ?? opts.aus.meta.bars ?? 4);
+  const noMidiParts = !opts.tracks.length;
+  const blankConvert = opts.blankAusConvert === true || (opts.blankAusConvert !== false && noMidiParts);
+
+  // ---- CASM: AUS only (never inject demo STY CASM/MIDI) ----
+  let casm: Bytes;
+  let casmSource: "aus" | "generated" = "generated";
+  const ausCasm = preferAusCasm ? extractCasmFromAus(opts.aus.raw) : null;
+  if (ausCasm && isValidCasm(ausCasm)) {
+    casm = ausCasm;
+    casmSource = "aus";
+    log.push(`CASM: lifted from AUS only (${casm.length} B) — no demo template`);
+  } else if (requireAusCasm) {
+    throw new Error(
+      "No valid CASM in the opened .aus/.sty. " +
+      "Audio Phraser must embed CASM in the .aus. " +
+      "Without it, PSR-SX / Genos show “Data not loaded properly”. " +
+      "Re-export the Live Audio Style from Audio Phraser, or open a .sty that already loads."
+    );
+  } else {
+    const casmSections = FULL_SECTION_LIST;
+    casm = buildCasm({ sections: casmSections, channels });
+    casmSource = "generated";
+    log.push(
+      `CASM: generated full SFF2 Ctb2 (${casm.length} B) · ${casmSections.length} sections — ` +
+      "may still fail on some keyboards; prefer AUS CASM"
+    );
+  }
+
+  // Forum audio: AASM (+ AFil) from AUS only — never from a demo STY graft
+  const forumAudio =
+    extractForumAudioBody(opts.aus.raw) ?? extractAudioBody(opts.aus.raw);
+
+  // ---- Blank AUS (no timeline MIDI): pure AUS → STY ----
+  if (blankConvert && noMidiParts) {
+    if (forumSafe && forumAudio && casmSource === "aus") {
+      // Prefer byte-stable full carrier when AUS already has SMF+CASM+audio
+      if (isCompleteStyleCarrier(opts.aus.raw)) {
+        const styBytes = opts.aus.raw;
+        const smfEnd = findEffectiveSmfEnd(styBytes);
+        const validation = validateStyleBytes(styBytes);
+        for (const w of validation.warnings) log.push(`⚠ ${w}`);
+        if (!validation.ok) {
+          // Fall through to forum re-pack SMF+CASM+audio
+          log.push("Blank carrier validation failed — re-packing SMF→CASM→AASM/AFil");
+        } else {
+          log.push("Blank AUS → STY: byte-stable (no demo MIDI, AUS only)");
+          log.push("Method: SMF + CASM + AASM/AFil from source AUS only");
+          log.push(`Final .sty: ${styBytes.length.toLocaleString()} B`);
+          log.push("Structure: SMF(AUS) → CASM(AUS) → AASM/AFil(AUS)");
+          log.push(`Validation OK · CASM(aus) · ${styBytes.length.toLocaleString()} B`);
+          return {
+            styBytes,
+            smfSize: smfEnd > 0 ? smfEnd : 0,
+            casmSize: casm.length,
+            audioSize: forumAudio.body.length,
+            mdbSize: 0,
+            otscSize: 0,
+            log,
+            validation,
+            casmSource
+          };
+        }
+      }
+
+      // Rebuild minimal conductor SMF + AUS CASM + AUS audio only
+      const sections = dedupeSections(
+        extractSectionsFromCasm(casm).length
+          ? extractSectionsFromCasm(casm)
+          : (opts.sections.length ? opts.sections : (["Main A"] as StyleSection[]))
+      );
+      const sectionLen = Math.max(tpq, opts.sectionLengthTicks ?? ticksPerBar * ausBars);
+      const setupEvents = liftAusSetup ? extractAusSetupEvents(opts.aus.raw) : [];
+      const conductor = buildConductorTrack({
+        bpm: opts.bpm,
+        num: opts.timeSigNum,
+        den: opts.timeSigDen,
+        name: opts.name,
+        sections,
+        sectionLengthTicks: sectionLen,
+        setupEvents
+      });
+      const smf = buildSmf0([conductor], tpq);
+      const styBytes = concat([smf, casm, forumAudio.body]);
+      log.push("Blank convert: SMF(conductor only) + CASM(AUS) + audio(AUS)");
+      log.push("Method: SMF + CASM + AASM/AFil · zero demo STY · Live Audio only");
+      log.push(`Audio (AUS only): ${forumAudio.source} · ${forumAudio.body.length.toLocaleString()} B`);
+      log.push("No demo STY MIDI channels included");
+      const validation = validateStyleBytes(styBytes);
+      for (const w of validation.warnings) log.push(`⚠ ${w}`);
+      if (!validation.ok) {
+        for (const e of validation.errors) log.push(`✗ ${e}`);
+        throw new Error(
+          "Export would be rejected by keyboard (“Data not loaded properly”): " +
+          validation.errors.join(" · ")
+        );
+      }
+      log.push(`Validation OK · CASM(aus) · ${styBytes.length.toLocaleString()} B`);
+      return {
+        styBytes,
+        smfSize: smf.length,
+        casmSize: casm.length,
+        audioSize: forumAudio.body.length,
+        mdbSize: 0,
+        otscSize: 0,
+        log,
+        validation,
+        casmSource
+      };
+    }
+  }
 
   let maxTrackTicks = 0;
   for (const at of opts.tracks) {
@@ -106,9 +235,16 @@ export function buildStyle(opts: StyleBuildOptions): StyleBuildResult {
     opts.sectionLengthTicks ?? Math.round(ticksPerBar * contentBars)
   );
 
+  // SX920: conductor section markers must match CASM Sdec when CASM is lifted.
+  const casmSections = casmSource === "aus" ? extractSectionsFromCasm(casm) : [];
   const sections = dedupeSections(
-    opts.sections.length ? opts.sections : (["Main A"] as StyleSection[])
+    casmSections.length
+      ? casmSections
+      : (opts.sections.length ? opts.sections : (["Main A"] as StyleSection[]))
   );
+  if (casmSections.length) {
+    log.push(`Sections: aligned to CASM Sdec (${sections.length}) — required for SX920`);
+  }
 
   const setupEvents = liftAusSetup ? extractAusSetupEvents(opts.aus.raw) : [];
   if (setupEvents.length) {
@@ -128,94 +264,132 @@ export function buildStyle(opts: StyleBuildOptions): StyleBuildResult {
   });
   const trackPayloads: Bytes[] = [conductor];
 
-  // Place each track at its section offset (default = first selected section).
+  // Timeline MIDI only — never import demo ContempRock channels
   const defaultSection = sections[0] ?? "Main A";
   for (const at of opts.tracks) {
     const section = at.section && sections.includes(at.section) ? at.section : defaultSection;
     const secIdx = Math.max(0, sections.indexOf(section));
     const offset = secIdx * sectionLen;
     const midiCh = styleChannelToMidi(at.targetChannel);
+    const isRhythm = midiCh === 8 || midiCh === 9;
     const shifted = shiftTrackEvents(at.track, offset);
     const withCc = injectChannelCc(shifted, midiCh, at.volume, at.pan);
-    const raw = remapTrackChannel(withCc, midiCh, {
-      program: at.program ?? 0,
-      bankMsb: at.bankMsb ?? 0,
-      bankLsb: at.bankLsb ?? 0
-    });
+    const raw = isRhythm
+      ? remapTrackChannel(withCc, midiCh)
+      : remapTrackChannel(withCc, midiCh, {
+          program: at.program ?? 0,
+          bankMsb: at.bankMsb ?? 0,
+          bankLsb: at.bankLsb ?? 0
+        });
     trackPayloads.push(raw);
-    const sound = at.soundName ?? `GM#${(at.program ?? 0) + 1}`;
+    const sound = isRhythm
+      ? "Rhythm kit (ch)"
+      : (at.soundName ?? `GM#${(at.program ?? 0) + 1}`);
     log.push(
-      `Wrapped "${at.sourceName}" → ${at.role} @ ${section} (tick ${offset}) · ch ${midiCh + 1} · ${sound}`
+      `Timeline MIDI "${at.sourceName}" → ${at.role} @ ${section} (tick ${offset}) · ch ${midiCh + 1} · ${sound}`
     );
   }
+  if (noMidiParts) {
+    log.push("No timeline MIDI — Live Audio only (AUS only)");
+  }
 
-  const smf = buildSmf1(trackPayloads, tpq);
+  // Yamaha PSR-SX / Genos styles are SMF Format 0 (single multi-channel MTrk).
+  const smf = buildSmf0(trackPayloads, tpq);
   log.push(
-    `SMF: ${trackPayloads.length} tracks, ${smf.length} B · section ${sectionLen} ticks ` +
-    `(${contentBars} bars · AUS ${ausBars} / MIDI ${midiBars})`
+    `SMF: Format 0 · ${trackPayloads.length} parts (conductor${opts.tracks.length ? `+${opts.tracks.length} timeline` : " only"}) · ${smf.length} B · ` +
+    `section ${sectionLen} ticks (${contentBars} bars · AUS ${ausBars} / MIDI ${midiBars})`
   );
 
-  // ---- CASM ----
-  let casm: Bytes;
-  let casmSource: "aus" | "generated" = "generated";
-  const ausCasm = preferAusCasm ? extractCasmFromAus(opts.aus.raw) : null;
-  if (ausCasm && isValidCasm(ausCasm)) {
-    casm = ausCasm;
-    casmSource = "aus";
-    log.push(`CASM: lifted from .aus (${casm.length} B)`);
-  } else {
-    if (requireAusCasm) {
-      throw new Error(
-        "No valid CASM in .aus — re-export from Audio Phraser, or disable “Require AUS CASM” to use generated tables (may fail on keyboard)."
-      );
-    }
-    if (preferAusCasm && ausCasm) {
-      log.push("CASM: .aus CASM invalid — generating Ctb2 fallback");
-    } else {
-      log.push("CASM: no AUS CASM — generating Ctb2 tables");
-    }
-    const casmSections = sections.length >= 4 ? sections : FULL_SECTION_LIST;
-    casm = buildCasm({ sections: casmSections, channels });
-    casmSource = "generated";
-    log.push(`CASM: generated (${casm.length} B) · ${casmSections.length} sections`);
-  }
-
-  // ---- Audio ----
-  const audio = extractAudioBody(opts.aus.raw);
-  if (!audio) {
-    throw new Error("No AASM/AWav/AUDI audio body found in .aus — keyboard will reject the style.");
-  }
-  if (audio.body.length < 64) {
-    throw new Error(`Audio body too small (${audio.body.length} B) — keyboard will reject the style.`);
-  }
-  log.push(`Audio: ${audio.source} · ${audio.body.length.toLocaleString()} B`);
-
-  // ---- Assemble: SMF → CASM → AASM → MDB → OTSc ----
-  const parts: Bytes[] = [smf, casm, audio.body];
+  let styBytes: Bytes;
+  let audioSize = 0;
   let mdbSize = 0;
   let otscSize = 0;
-  if (includeMdb) {
-    const mdb = buildMdb({
-      name: opts.name,
-      category: opts.category,
-      bpm: opts.bpm,
-      timeSigNum: opts.timeSigNum,
-      timeSigDen: opts.timeSigDen
-    });
-    parts.push(mdb);
-    mdbSize = mdb.length;
-    log.push(`MDB: ${mdbSize} B · ${opts.name} / ${opts.category} / ${opts.bpm} BPM`);
-  }
-  if (includeOtsc) {
-    const otsc = buildOtsc();
-    parts.push(otsc);
-    otscSize = otsc.length;
-    log.push(`OTSc: empty 4-slot block (${otscSize} B)`);
-  }
 
-  const styBytes = concat(parts);
-  log.push(`Final .sty: ${styBytes.length.toLocaleString()} B`);
-  log.push("Structure: SMF(SFF2·SInt) → CASM → AASM → MDB → OTSc");
+  // STY re-edit only: preserve original post-SMF tail from the opened .sty
+  if (opts.preservePostSmfFrom) {
+    const src = opts.preservePostSmfFrom;
+    const srcSmfEnd = findEffectiveSmfEnd(src);
+    if (srcSmfEnd < 0 || srcSmfEnd >= src.length) {
+      throw new Error("Cannot preserve post-SMF: original style has no valid SMF end.");
+    }
+    const tail = src.subarray(srcSmfEnd);
+    if (tail.length < 16) {
+      throw new Error("Original style post-SMF region is empty — cannot preserve CASM/audio.");
+    }
+    styBytes = concat([smf, tail]);
+    const audio = extractAudioBody(src) ?? extractForumAudioBody(src);
+    audioSize = audio?.body.length ?? 0;
+    mdbSize = 0;
+    otscSize = 0;
+    log.push(
+      `STY re-export: preserved post-SMF (${tail.length.toLocaleString()} B) — CASM/audio from opened .sty`
+    );
+    log.push(`Final .sty: ${styBytes.length.toLocaleString()} B (SMF rebuilt + original tail)`);
+    log.push("Structure: SMF(new) → [original post-SMF chunks]");
+  } else if (forumSafe) {
+    // Forum-safe AUS path: SMF + CASM(AUS) + AASM/AFil(AUS) — never demo content
+    if (!forumAudio) {
+      throw new Error(
+        "No AASM/AFil/AWav/AUDI audio body found in .aus — keyboard will reject the style."
+      );
+    }
+    if (forumAudio.body.length < 64) {
+      throw new Error(`Audio body too small (${forumAudio.body.length} B) — keyboard will reject the style.`);
+    }
+    audioSize = forumAudio.body.length;
+    log.push(`Audio (AUS only): ${forumAudio.source} · ${audioSize.toLocaleString()} B`);
+    // Forum order: SMF → CASM → AASM[/AFil] — no synthetic MDB/OTSc after Live Audio
+    styBytes = concat([smf, casm, forumAudio.body]);
+    log.push(
+      opts.tracks.length
+        ? `SMF(Format0 + ${opts.tracks.length} timeline part(s)) → CASM(AUS) → AASM/AFil(AUS)`
+        : "SMF(Format0 conductor) → CASM(AUS) → AASM/AFil(AUS) — zero demo MIDI"
+    );
+    log.push("Method: AUS-only · no ContempRock/demo graft");
+    log.push(`Final .sty: ${styBytes.length.toLocaleString()} B`);
+    if (includeMdb || includeOtsc) {
+      log.push("MDB/OTSc: skipped on Live Audio path (avoids SX load failures)");
+    }
+  } else {
+    // Legacy non-forum path
+    const audio = extractAudioBody(opts.aus.raw);
+    if (!audio) {
+      throw new Error("No AASM/AWav/AUDI audio body found in .aus — keyboard will reject the style.");
+    }
+    if (audio.body.length < 64) {
+      throw new Error(`Audio body too small (${audio.body.length} B) — keyboard will reject the style.`);
+    }
+    log.push(`Audio: ${audio.source} · ${audio.body.length.toLocaleString()} B`);
+    audioSize = audio.body.length;
+
+    const parts: Bytes[] = [smf, casm, audio.body];
+    if (includeMdb && !audio.source.includes("EOF")) {
+      const mdb = buildMdb({
+        name: opts.name,
+        category: opts.category,
+        bpm: opts.bpm,
+        timeSigNum: opts.timeSigNum,
+        timeSigDen: opts.timeSigDen
+      });
+      parts.push(mdb);
+      mdbSize = mdb.length;
+      log.push(`MDB: ${mdbSize} B · ${opts.name} / ${opts.category} / ${opts.bpm} BPM`);
+    } else if (includeMdb) {
+      log.push("MDB: skipped (audio body is AASM→EOF; trailers already in audio block)");
+    }
+    if (includeOtsc && !audio.source.includes("EOF")) {
+      const otsc = buildOtsc();
+      parts.push(otsc);
+      otscSize = otsc.length;
+      log.push(`OTSc: ${otscSize} B`);
+    } else if (includeOtsc) {
+      log.push("OTSc: skipped (preserved inside AASM→EOF if present)");
+    }
+
+    styBytes = concat(parts);
+    log.push(`Final .sty: ${styBytes.length.toLocaleString()} B`);
+    log.push("Structure: SMF(Format0·SFF2·SInt) → CASM → AASM…");
+  }
 
   const validation = validateStyleBytes(styBytes);
   for (const w of validation.warnings) log.push(`⚠ ${w}`);
@@ -238,7 +412,7 @@ export function buildStyle(opts: StyleBuildOptions): StyleBuildResult {
     styBytes,
     smfSize: smf.length,
     casmSize: casm.length,
-    audioSize: audio.body.length,
+    audioSize,
     mdbSize,
     otscSize,
     log,
@@ -246,6 +420,22 @@ export function buildStyle(opts: StyleBuildOptions): StyleBuildResult {
     casmSource
   };
 }
+
+/** PSR display channel (1-based) → MIDI 0-based — Yamaha style map. */
+export const PSR_STYLE_CHANNEL_MAP: ReadonlyArray<{
+  role: string;
+  psrCh: number;
+  midiCh: number;
+}> = [
+  { role: "Rhythm 2 (Sub)", psrCh: 9, midiCh: 8 },
+  { role: "Rhythm 1 (Main)", psrCh: 10, midiCh: 9 },
+  { role: "Bass", psrCh: 11, midiCh: 10 },
+  { role: "Chord 1", psrCh: 12, midiCh: 11 },
+  { role: "Chord 2", psrCh: 13, midiCh: 12 },
+  { role: "Pad", psrCh: 14, midiCh: 13 },
+  { role: "Phrase 1", psrCh: 15, midiCh: 14 },
+  { role: "Phrase 2", psrCh: 16, midiCh: 15 }
+];
 
 function shiftTrackEvents(track: MidiTrack, offsetTicks: number): MidiTrack {
   if (!offsetTicks) return track;
@@ -426,9 +616,10 @@ function buildConductorTrack(opts: {
       }
     }
   } else {
+    // Minimal XG System On + rhythm banks (ch 9/10 = MIDI 8/9) — no fake melodic init
     at(0, [0xf0, 0x08, 0x43, 0x10, 0x4c, 0x00, 0x00, 0x7e, 0x00, 0xf7]);
-    at(0, [0xb8, 0x00, 0x7f]);
-    at(0, [0xb9, 0x00, 0x7f]);
+    at(0, [0xb8, 0x00, 0x7f]); // Rhythm Sub bank MSB
+    at(0, [0xb9, 0x00, 0x7f]); // Rhythm Main bank MSB
     at(0, [0xb8, 0x20, 0x00]);
     at(0, [0xb9, 0x20, 0x00]);
     at(0, [0xc8, 0x00]);

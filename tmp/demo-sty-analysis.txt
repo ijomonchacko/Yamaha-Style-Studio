@@ -1,0 +1,55 @@
+=== FILE ===
+size 1079130
+format 0 0 tracks 1 tpq 1920
+smfEnd 51022
+=== TOP CHUNKS ===
+OTSc off 53085 size 8580
+FNRc off 61673 size 141
+AASM off 61822 size 318
+AFil off 62148 size 1016974
+=== CASM ===
+valid true len 2130
+sections Main A | Main B | Main C | Fill In AA | Fill In BB | Fill In CC | Intro A | Ending A | Break
+CSEG 3 Ctb2 0 Ctab 43
+Sdec: Main A,Main B,Main C,Fill In AA,Fill In BB,Fill In CC,Intro A,Ending A,Fill In BA
+Sdec: Main D,Fill In DD
+Sdec: Intro B,Intro C,Ending B,Ending C
+=== AUDIO === AASM→EOF 1017308
+AASM full 326 payload 318
+ nested ASEG sz 151
+ nested ASEG sz 151
+=== PARSE ===
+name Opened Style bpm 126 ts 4/4
+sections Main A
+hasCasm true hasAudio true
+midi tracks 8 lenTicks 460800
+ track 0 Rhythm 2 ch 8 notes 390
+ track 1 Rhythm 1 ch 9 notes 889
+ track 2 Bass ch 10 notes 335
+ track 3 Chord 1 ch 11 notes 731
+ track 4 Chord 2 ch 12 notes 767
+ track 5 Pad ch 13 notes 219
+ track 6 Phrase 1 ch 14 notes 211
+ track 7 Phrase 2 ch 15 notes 151
+=== VALIDATE ===
+{"ok":false,"errors":["Missing CASM chunk after SMF — keyboard will show “Data not loaded properly”."],"warnings":["OTSc present (8580 B)","Top-level layout: OTSc → FNRc → AASM → AFil"],"hasSff2":true,"hasSInt":true,"hasCasm":false,"hasAudio":true}
+=== MARKERS === 17
+0 SFF2
+0 SInt
+7680 Main A
+38400 Main B
+69120 Main C
+99840 Main D
+130560 Fill In AA
+138240 Fill In BB
+145920 Fill In CC
+153600 Fill In DD
+161280 Intro A
+168960 Intro B
+230400 Intro C
+291840 Ending A
+314880 Ending B
+368640 Ending C
+453120 Fill In BA
+bytes before CASM after smf 2063
+layout OTSc -> FNRc -> AASM -> AFil

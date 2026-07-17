@@ -99,6 +99,20 @@ export const DEFAULT_PIANO_SOUND_ID = "gm-0";
  * XG entries keep a GM program for browser preview; bank MSB/LSB go into export.
  */
 export const STYLE_SOUNDS: readonly StyleSound[] = [
+  // —— Drums / kits (Rhythm 1–2 preview · Yamaha-style bank names for export MSB/LSB) ——
+  { id: "gm-drum", name: "Standard Kit", program: 0, bank: "GM", msb: 127, lsb: 0, category: "Drums" },
+  { id: "gm-drum-room", name: "Room Kit", program: 8, bank: "GM", msb: 127, lsb: 0, category: "Drums" },
+  { id: "gm-drum-power", name: "Power Kit", program: 16, bank: "GM", msb: 127, lsb: 0, category: "Drums" },
+  { id: "gm-drum-electro", name: "Electronic Kit", program: 24, bank: "GM", msb: 127, lsb: 0, category: "Drums" },
+  { id: "gm-drum-analog", name: "Analog Kit", program: 25, bank: "GM", msb: 127, lsb: 0, category: "Drums" },
+  { id: "gm-drum-jazz", name: "Jazz Kit", program: 32, bank: "GM", msb: 127, lsb: 0, category: "Drums" },
+  { id: "gm-drum-brush", name: "Brush Kit", program: 40, bank: "GM", msb: 127, lsb: 0, category: "Drums" },
+  { id: "gm-drum-orch", name: "Orchestra Kit", program: 48, bank: "GM", msb: 127, lsb: 0, category: "Drums" },
+  { id: "xg-drum-pop", name: "Pop Kit (XG)", program: 0, bank: "XG", msb: 127, lsb: 1, category: "Drums" },
+  { id: "xg-drum-rock", name: "Rock Kit (XG)", program: 16, bank: "XG", msb: 127, lsb: 16, category: "Drums" },
+  { id: "xg-drum-dance", name: "Dance Kit (XG)", program: 24, bank: "XG", msb: 127, lsb: 24, category: "Drums" },
+  { id: "xg-drum-brush", name: "Brush Kit (XG)", program: 40, bank: "XG", msb: 127, lsb: 40, category: "Drums" },
+
   // —— Piano (default family) ——
   { id: "gm-0", name: "Grand Piano", program: 0, bank: "GM", msb: 0, lsb: 0, category: "Piano" },
   { id: "gm-1", name: "Bright Piano", program: 1, bank: "GM", msb: 0, lsb: 0, category: "Piano" },
@@ -180,11 +194,13 @@ export const STYLE_SOUNDS: readonly StyleSound[] = [
 ];
 
 export const SOUND_CATEGORIES: readonly string[] = [
-  "Piano", "Bass", "Guitar", "Strings", "Pad", "Brass", "Woodwind", "Organ", "Synth", "Mallets", "World"
+  "Drums", "Piano", "Bass", "Guitar", "Strings", "Pad", "Brass", "Woodwind", "Organ", "Synth", "Mallets", "World"
 ];
 
-/** Sensible defaults — all piano until user changes (per request). */
+/** Sensible defaults — piano on melodic lanes; drums use kit via engine ch 8/9. */
 export const ROLE_DEFAULT_PROGRAM: Record<number, number> = {
+  8: 0,  // Rhythm 2 — drum kit path in PlaybackEngine
+  9: 0,  // Rhythm 1 — drum kit path in PlaybackEngine
   10: DEFAULT_PIANO_PROGRAM,
   11: DEFAULT_PIANO_PROGRAM,
   12: DEFAULT_PIANO_PROGRAM,
@@ -194,6 +210,8 @@ export const ROLE_DEFAULT_PROGRAM: Record<number, number> = {
 };
 
 export const ROLE_DEFAULT_SOUND_ID: Record<string, string> = {
+  "Rhythm 1": "gm-drum",
+  "Rhythm 2": "gm-drum",
   "Bass": DEFAULT_PIANO_SOUND_ID,
   "Chord 1": DEFAULT_PIANO_SOUND_ID,
   "Chord 2": DEFAULT_PIANO_SOUND_ID,

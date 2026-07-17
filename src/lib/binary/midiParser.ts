@@ -201,10 +201,88 @@ function decodeTrackEvents(raw: Bytes): { events: MidiEvent[]; channels: number[
 export interface RemapOptions {
   /** Force a GM program (and optional XG bank) at tick 0; drop source program changes. */
   program?: number;
-  /** XG / GM bank select MSB (CC0). Default 0. */
+  /** XG bank select MSB (CC0). Default 0. */
   bankMsb?: number;
   /** XG bank select LSB (CC32). Default 0. */
   bankLsb?: number;
+}
+
+/**
+ * Expand SMF-0 / multi-timbral style tracks into one virtual track per MIDI channel
+ * that has note-ons. Yamaha .sty files are often format 0: one MTrk with ch 8–15.
+ */
+export function splitMidiByChannel(midi: ParsedMidi): ParsedMidi {
+  const byCh = new Map<number, MidiEvent[]>();
+  let maxTick = 0;
+
+  for (const tr of midi.tracks) {
+    for (const e of tr.events) {
+      if (e.tick > maxTick) maxTick = e.tick;
+      if (
+        e.kind === "note-on" ||
+        e.kind === "note-off" ||
+        e.kind === "cc" ||
+        e.kind === "program" ||
+        e.kind === "pitch-bend"
+      ) {
+        const ch = e.channel;
+        if (!byCh.has(ch)) byCh.set(ch, []);
+        byCh.get(ch)!.push(e);
+      }
+    }
+  }
+
+  // Prefer style channels 8–15 (Rhythm Sub … Phrase 2); fall back to all with notes
+  const preferred = [8, 9, 10, 11, 12, 13, 14, 15];
+  const withNotes = [...byCh.entries()]
+    .filter(([, evs]) => evs.some(e => e.kind === "note-on" && e.velocity > 0))
+    .map(([ch]) => ch)
+    .sort((a, b) => a - b);
+
+  const channels = preferred.filter(c => withNotes.includes(c));
+  const finalChs = channels.length ? channels : withNotes;
+
+  if (finalChs.length <= 1 && midi.tracks.length > 1) {
+    // Already multi-track SMF-1 with separate parts — keep as-is
+    const multiNoteful = midi.tracks.filter(t =>
+      t.events.some(e => e.kind === "note-on" && e.velocity > 0)
+    );
+    if (multiNoteful.length > 1) return midi;
+  }
+
+  if (!finalChs.length) return midi;
+
+  const ROLE_NAMES: Record<number, string> = {
+    8: "Rhythm 2",
+    9: "Rhythm 1",
+    10: "Bass",
+    11: "Chord 1",
+    12: "Chord 2",
+    13: "Pad",
+    14: "Phrase 1",
+    15: "Phrase 2"
+  };
+
+  const tracks: MidiTrack[] = finalChs.map((ch, index) => {
+    const events = (byCh.get(ch) ?? []).slice().sort((a, b) => a.tick - b.tick);
+    return {
+      index,
+      name: ROLE_NAMES[ch] ?? `MIDI ch ${ch + 1}`,
+      events,
+      channelsUsed: [ch],
+      raw: new Uint8Array(0)
+    };
+  });
+
+  return {
+    format: 1,
+    ticksPerQuarter: midi.ticksPerQuarter,
+    tracks,
+    tempoBpm: midi.tempoBpm,
+    timeSigNumerator: midi.timeSigNumerator,
+    timeSigDenominator: midi.timeSigDenominator,
+    lengthTicks: Math.max(midi.lengthTicks, maxTick)
+  };
 }
 
 /**
@@ -299,8 +377,7 @@ export function remapTrackChannel(
 
 /**
  * Build an SMF-1 file from an array of MTrk payloads.
- * Section / SFF2 markers belong inside the conductor track (see styleStitcher),
- * not as a separate optional marker track.
+ * Prefer {@link buildSmf0} for Yamaha arranger styles (PSR-SX / Genos).
  */
 export function buildSmf1(trackPayloads: Bytes[], ticksPerQuarter: number): Bytes {
   const parts: Bytes[] = [];
@@ -316,4 +393,124 @@ export function buildSmf1(trackPayloads: Bytes[], ticksPerQuarter: number): Byte
     parts.push(t);
   }
   return concat(parts);
+}
+
+/**
+ * Build SMF Format 0 — single multi-channel MTrk.
+ *
+ * Real Yamaha PSR-SX / Genos / Audio Phraser styles are almost always Format 0
+ * (one MTrk with channels 8–15). Format 1 multi-track SMF is a common cause of
+ * keyboard “Data not loaded properly” when paired with SFF2 CASM.
+ *
+ * `trackPayloads[0]` should be the conductor (markers/tempo); remaining payloads
+ * are style parts already remapped to their target MIDI channels.
+ */
+export function buildSmf0(trackPayloads: Bytes[], ticksPerQuarter: number): Bytes {
+  if (!trackPayloads.length) {
+    return buildSmf1([], ticksPerQuarter);
+  }
+  if (trackPayloads.length === 1) {
+    const parts: Bytes[] = [];
+    parts.push(tag("MThd"));
+    parts.push(writeU32BE(6));
+    parts.push(writeU16BE(0)); // format 0
+    parts.push(writeU16BE(1));
+    parts.push(writeU16BE(Math.max(1, ticksPerQuarter & 0x7fff)));
+    parts.push(tag("MTrk"));
+    parts.push(writeU32BE(trackPayloads[0].length));
+    parts.push(trackPayloads[0]);
+    return concat(parts);
+  }
+
+  // Merge all MTrk payloads into one absolute-timed event stream, then re-encode
+  type AbsEv = { tick: number; bytes: number[] };
+  const abs: AbsEv[] = [];
+
+  for (const payload of trackPayloads) {
+    let i = 0;
+    let tick = 0;
+    let running = 0;
+    while (i < payload.length) {
+      // delta VLQ
+      let delta = 0;
+      let b: number;
+      do {
+        b = payload[i++];
+        delta = (delta << 7) | (b & 0x7f);
+      } while (b & 0x80 && i < payload.length);
+      tick += delta;
+      if (i >= payload.length) break;
+
+      let status = payload[i];
+      const start = i;
+      if (status < 0x80) {
+        status = running;
+      } else {
+        running = status;
+        i++;
+      }
+
+      if (status === 0xff) {
+        const mt = payload[i++];
+        let len = 0;
+        do {
+          b = payload[i++];
+          len = (len << 7) | (b & 0x7f);
+        } while (b & 0x80 && i < payload.length);
+        // Skip End-of-Track from non-primary tracks; keep one EOT at the end
+        if (mt === 0x2f) {
+          i += len;
+          continue;
+        }
+        const data = payload.subarray(i, i + len);
+        i += len;
+        const bytes = [0xff, mt, ...Array.from(writeVLQ(len)), ...data];
+        abs.push({ tick, bytes });
+        continue;
+      }
+      if (status === 0xf0 || status === 0xf7) {
+        let len = 0;
+        do {
+          b = payload[i++];
+          len = (len << 7) | (b & 0x7f);
+        } while (b & 0x80 && i < payload.length);
+        const data = payload.subarray(i, i + len);
+        i += len;
+        abs.push({ tick, bytes: [status, ...Array.from(writeVLQ(len)), ...data] });
+        continue;
+      }
+
+      const type = status & 0xf0;
+      let dataLen = 2;
+      if (type === 0xc0 || type === 0xd0) dataLen = 1;
+      const data = payload.subarray(i, i + dataLen);
+      i += dataLen;
+      abs.push({ tick, bytes: [status, ...data] });
+      void start;
+    }
+  }
+
+  abs.sort((a, b) => a.tick - b.tick || a.bytes[0] - b.bytes[0]);
+
+  const out: Bytes[] = [];
+  let lastTick = 0;
+  for (const ev of abs) {
+    out.push(writeVLQ(Math.max(0, ev.tick - lastTick)));
+    out.push(new Uint8Array(ev.bytes));
+    lastTick = ev.tick;
+  }
+  out.push(writeVLQ(0));
+  out.push(new Uint8Array([0xff, 0x2f, 0x00]));
+  const body = concat(out);
+
+  return concat([
+    tag("MThd"),
+    writeU32BE(6),
+    writeU16BE(0), // format 0 — Yamaha arranger standard
+    writeU16BE(1),
+    writeU16BE(Math.max(1, ticksPerQuarter & 0x7fff)),
+    tag("MTrk"),
+    writeU32BE(body.length),
+    body
+  ]);
 }
