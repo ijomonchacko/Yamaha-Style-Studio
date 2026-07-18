@@ -120,13 +120,18 @@ const built = buildStyle({
 
 assert(built.validation.ok, "build validation ok");
 assert(built.casmSource === "aus", "CASM lifted from AUS");
-// Live Audio path: SMF Format 0 + CASM + AASM only (no synthetic MDB/OTSc after AASM→EOF)
+// Live Audio path: SMF Format 0 → CASM → OTSc → AASM (Style Editor safe)
 assert(readFourCC(built.styBytes, 0) === "MThd", "starts with MThd");
 assert(built.styBytes[8] === 0 && built.styBytes[9] === 0, "SMF Format 0 (Yamaha)");
 
 const tops = walkStyleTopChunks(built.styBytes).map(c => c.id);
 assert(tops.includes("CASM") && tops.includes("AASM"), "CASM + AASM present");
+assert(tops.includes("OTSc"), "OTSc present (Style Editor safety)");
+assert(tops.indexOf("CASM") < tops.indexOf("OTSc"), "CASM before OTSc");
+assert(tops.indexOf("OTSc") < tops.indexOf("AASM"), "OTSc before AASM");
+assert(built.otscSize > 64, `OTSc substantial (${built.otscSize})`);
 assert(built.log.some(l => l.includes("Format 0")), "build log reports Format 0");
+assert(built.validation.hasOtsc, "validation reports OTSc");
 
 // —— 5. Fail-closed without CASM ——
 let threw = false;
@@ -220,8 +225,10 @@ assert(
   blank.log.some(l => l.includes("byte-stable") || l.includes("AUS only") || l.includes("Blank convert")),
   "blank convert is AUS-only"
 );
-// Must not be larger than AUS by demo-template bloat
-assert(blank.styBytes.length <= fakeAus.length + 4096, "blank convert not bloated by demo STY");
+const blankTops = walkStyleTopChunks(blank.styBytes).map(c => c.id);
+assert(blankTops.includes("OTSc"), "blank convert has OTSc");
+// OTSc template (~8.5KB) is expected overhead beyond synthetic AUS
+assert(blank.styBytes.length <= fakeAus.length + 12000, "blank convert not bloated by demo STY MIDI");
 
 // —— 10. With timeline MIDI: forum-safe AUS CASM + audio + only user MIDI ——
 const withMidi = buildStyle({

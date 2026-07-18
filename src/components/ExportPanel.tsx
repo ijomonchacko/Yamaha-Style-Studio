@@ -19,11 +19,13 @@ interface Props {
   onRequireAusCasmChange?: (v: boolean) => void;
   checklist?: ChecklistItem[];
   modeLabel?: string;
+  onSaveProject?: () => void;
+  onLoadProject?: () => void;
 }
 
 /**
  * Keyboard export panel.
- * Layout: SMF Format 0 (SFF2 + SInt) → CASM (AUS) → AASM / AFil (AUS).
+ * Layout: SMF Format 0 → CASM → OTSc → AASM/AFil (Style Editor safe).
  */
 export function ExportPanel({
   ready,
@@ -36,12 +38,17 @@ export function ExportPanel({
   requireAusCasm,
   onRequireAusCasmChange,
   checklist = [],
-  modeLabel
+  modeLabel,
+  onSaveProject,
+  onLoadProject
 }: Props) {
   const log = result?.log ?? [];
   const hasTimelineMidi = log.some(l => /Timeline MIDI/i.test(l));
   const readyCount = checklist.filter(i => i.ok).length;
   const readyTotal = checklist.length;
+  const v = result?.validation;
+  const postChecks = v?.checks ?? [];
+  const allPostOk = !!v?.ok;
 
   return (
     <div className="st-panel export-panel">
@@ -62,14 +69,14 @@ export function ExportPanel({
         <div className="export-layout-row">
           <span className="export-layout-label">Layout</span>
           <code className="export-layout-chain">
-            SMF F0 → CASM → AASM/AFil
+            {v?.layout || "SMF F0 → CASM → OTSc → AASM/AFil"}
           </code>
         </div>
 
         {checklist.length > 0 && (
           <div className="export-ready-row">
             <span className="export-ready-count">
-              {readyCount}/{readyTotal} ready
+              Pre-flight {readyCount}/{readyTotal}
             </span>
             <div className="export-ready-dots" aria-hidden>
               {checklist.map(item => (
@@ -81,6 +88,20 @@ export function ExportPanel({
               ))}
             </div>
           </div>
+        )}
+
+        {checklist.length > 0 && (
+          <ul className="export-check-list">
+            {checklist.map(item => (
+              <li key={item.id} className={item.ok ? "is-ok" : "is-bad"}>
+                <span className="export-check-mark">{item.ok ? "✓" : "✗"}</span>
+                <span className="export-check-label">{item.label}</span>
+                {item.detail && (
+                  <span className="export-check-detail">{item.detail}</span>
+                )}
+              </li>
+            ))}
+          </ul>
         )}
 
         {onRequireAusCasmChange != null && (
@@ -97,6 +118,21 @@ export function ExportPanel({
           </label>
         )}
 
+        {(onSaveProject || onLoadProject) && (
+          <div className="export-project-row">
+            {onSaveProject && (
+              <button type="button" className="export-btn-secondary" onClick={onSaveProject}>
+                Save project
+              </button>
+            )}
+            {onLoadProject && (
+              <button type="button" className="export-btn-secondary" onClick={onLoadProject}>
+                Load project
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="export-actions">
           <button
             type="button"
@@ -110,7 +146,7 @@ export function ExportPanel({
             type="button"
             className="export-btn-secondary"
             onClick={onDownload}
-            disabled={!result}
+            disabled={!result || !allPostOk}
           >
             Download
           </button>
@@ -125,7 +161,7 @@ export function ExportPanel({
 
         {warnings.length > 0 && !error && (
           <div className="export-warn">
-            {warnings.slice(0, 3).map((w, i) => (
+            {warnings.slice(0, 4).map((w, i) => (
               <div key={i}>{w}</div>
             ))}
           </div>
@@ -135,21 +171,44 @@ export function ExportPanel({
           {result ? (
             <>
               <div className="export-result-line">
-                <span className="export-result-dot" />
+                <span className={`export-result-dot ${allPostOk ? "" : "is-fail"}`} />
                 <span className="export-result-text">
-                  {result.validation.ok ? "Validated" : "Issues"}
+                  {allPostOk ? "PASS · Style Editor safe" : "FAIL · do not load on keyboard"}
                   <em>
                     {result.casmSource === "aus" ? " · CASM AUS" : " · CASM gen"}
+                    {result.otscSize > 0 ? " · OTSc" : " · no OTSc"}
                     {hasTimelineMidi ? " · MIDI" : " · Live Audio"}
                   </em>
                 </span>
                 <span className="export-result-total">{fmt(result.styBytes.length)}</span>
               </div>
+
+              {postChecks.length > 0 && (
+                <ul className="export-validator">
+                  {postChecks.map(c => (
+                    <li key={c.id} className={c.ok ? "is-ok" : "is-bad"}>
+                      <span>{c.ok ? "PASS" : "FAIL"}</span>
+                      <b>{c.label}</b>
+                      {c.detail && <em>{c.detail}</em>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {v && v.errors.length > 0 && (
+                <div className="export-error">
+                  <strong>Validator errors</strong>
+                  {v.errors.map((e, i) => (
+                    <p key={i}>{e}</p>
+                  ))}
+                </div>
+              )}
+
               <div className="export-stats">
                 <div><span>SMF</span><b>{fmt(result.smfSize)}</b></div>
                 <div><span>CASM</span><b>{fmt(result.casmSize)}</b></div>
+                <div><span>OTSc</span><b>{fmt(result.otscSize)}</b></div>
                 <div><span>Audio</span><b>{fmt(result.audioSize)}</b></div>
-                <div><span>Total</span><b>{fmt(result.styBytes.length)}</b></div>
               </div>
               <details className="export-log">
                 <summary>Build log</summary>
@@ -158,8 +217,8 @@ export function ExportPanel({
             </>
           ) : (
             <p className="export-idle-line">
-              Compile builds SMF + CASM + Live Audio from your source.
-              Timeline MIDI only if lanes are assigned.
+              Compile builds SMF → CASM → OTSc → Live Audio.
+              OTSc is required so Style Editor does not crash (SRJRRR).
             </p>
           )}
         </div>

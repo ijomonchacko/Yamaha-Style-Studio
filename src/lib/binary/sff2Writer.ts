@@ -331,11 +331,42 @@ export function buildMdb(spec: MdbSpec): Bytes {
   return concat([tag("MDB "), writeU32BE(body.length), body]);
 }
 
-/** Optional empty One-Touch Settings (4 slots). */
+/**
+ * Minimal empty OTSc (4 empty OTSs slots).
+ * Prefer getDefaultOtsc() from defaultOtsc.ts for Style Editor safety —
+ * empty OTSc alone can still crash some SX firmware paths (SRJRRR L11).
+ */
 export function buildOtsc(): Bytes {
   const emptySlot = concat([tag("OTSs"), writeU32BE(2), writeU16BE(0)]);
   const body = concat([emptySlot, emptySlot, emptySlot, emptySlot]);
   return concat([tag("OTSc"), writeU32BE(body.length), body]);
+}
+
+/**
+ * Lift a real OTSc chunk from a known-good .sty if present.
+ * Returns null when missing or malformed.
+ */
+export function extractOtsc(buf: Bytes): Bytes | null {
+  const tops = walkStyleTopChunks(buf);
+  const hit = tops.find(c => c.id === "OTSc");
+  if (hit && hit.full.length >= 16) return hit.full;
+  const off = findFourCCOffset(buf, "OTSc");
+  if (off < 0 || off + 8 > buf.length) return null;
+  const size = readU32BE(buf, off + 4);
+  if (size < 8 || size > buf.length - (off + 8)) return null;
+  return buf.subarray(off, off + 8 + size);
+}
+
+/** True when OTSc has nested MTrk/OTSs payload (real OTS, not empty stub). */
+export function isSubstantialOtsc(otsc: Bytes): boolean {
+  if (otsc.length < 32 || readFourCC(otsc, 0) !== "OTSc") return false;
+  const size = readU32BE(otsc, 4);
+  if (size + 8 > otsc.length || size < 16) return false;
+  // Real SX OTS embeds 4× MTrk sysex banks (~2KB each) or OTSs slots
+  const body = otsc.subarray(8, 8 + size);
+  const hasMtrk = findFourCCOffset(body, "MTrk") >= 0;
+  const hasOtss = findFourCCOffset(body, "OTSs") >= 0;
+  return (hasMtrk || hasOtss) && otsc.length >= 64;
 }
 
 /**
@@ -581,26 +612,59 @@ export interface StyleValidation {
   hasSInt: boolean;
   hasCasm: boolean;
   hasAudio: boolean;
+  hasOtsc: boolean;
+  /** Section markers found in SMF conductor (meta 0x06). */
+  smfSections: string[];
+  /** Sections declared in CASM Sdec. */
+  casmSections: StyleSection[];
+  /** Pass/fail checklist for UI. */
+  checks: { id: string; label: string; ok: boolean; detail?: string }[];
   casmSourceHint?: string;
+  /** Expected keyboard layout string. */
+  layout: string;
 }
 
 export function validateStyleBytes(sty: Bytes): StyleValidation {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const checks: StyleValidation["checks"] = [];
+
+  const failEmpty = (msg: string): StyleValidation => ({
+    ok: false,
+    errors: [msg],
+    warnings,
+    hasSff2: false,
+    hasSInt: false,
+    hasCasm: false,
+    hasAudio: false,
+    hasOtsc: false,
+    smfSections: [],
+    casmSections: [],
+    checks: [{ id: "size", label: "File size", ok: false, detail: msg }],
+    layout: ""
+  });
 
   if (sty.length < 64) {
-    errors.push("Style file is too small to be valid.");
-    return { ok: false, errors, warnings, hasSff2: false, hasSInt: false, hasCasm: false, hasAudio: false };
+    return failEmpty("Style file is too small to be valid.");
   }
 
   if (readFourCC(sty, 0) !== "MThd") {
     errors.push("Missing MThd header — keyboard will reject this file.");
   }
+  checks.push({ id: "mthd", label: "MThd header", ok: readFourCC(sty, 0) === "MThd" });
+
+  // Format 0 required for Yamaha styles
+  const isFmt0 = sty.length >= 10 && sty[8] === 0 && sty[9] === 0;
+  if (!isFmt0 && readFourCC(sty, 0) === "MThd") {
+    errors.push("SMF must be Format 0 (Yamaha styles are single-track multi-channel).");
+  }
+  checks.push({ id: "fmt0", label: "SMF Format 0", ok: isFmt0 });
 
   const smfEnd = findSmfEnd(sty);
   if (smfEnd < 0) {
     errors.push("Could not parse SMF track block (MThd/MTrk).");
   }
+  checks.push({ id: "smf", label: "SMF parseable", ok: smfEnd > 0 });
 
   // Scan conductor / SMF region for required markers.
   const smfRegion = sty.subarray(0, smfEnd > 0 ? smfEnd : Math.min(sty.length, 65536));
@@ -608,6 +672,10 @@ export function validateStyleBytes(sty: Bytes): StyleValidation {
   const hasSInt = containsAscii(smfRegion, "SInt");
   if (!hasSff2) errors.push('Missing required marker "SFF2" (or SFF1) in conductor track.');
   if (!hasSInt) errors.push('Missing required marker "SInt" in conductor track.');
+  checks.push({ id: "sff2", label: "SFF2 / SFF1 marker", ok: hasSff2 });
+  checks.push({ id: "sint", label: "SInt marker", ok: hasSInt });
+
+  const smfSections = extractSmfSectionMarkers(smfRegion);
 
   const tops = walkStyleTopChunks(sty);
   let casmChunk = tops.find(c => c.id === "CASM");
@@ -629,6 +697,27 @@ export function validateStyleBytes(sty: Bytes): StyleValidation {
   } else if (!hasCasm) {
     errors.push("CASM chunk is present but malformed (need CSEG → Sdec + Ctb2/Ctab).");
   }
+  checks.push({
+    id: "casm",
+    label: "CASM (CSEG + Sdec + Ctb2)",
+    ok: hasCasm,
+    detail: casmChunk ? `${casmChunk.size} B` : undefined
+  });
+
+  const casmSections = hasCasm && casmChunk
+    ? extractSectionsFromCasm(casmChunk.full)
+    : [];
+
+  // Style Editor crash (SRJRRR L11): Live Audio styles need OTSc between CASM and AASM
+  const otscChunk = tops.find(c => c.id === "OTSc") ?? (() => {
+    const raw = extractOtsc(sty);
+    if (!raw) return undefined;
+    const off = findFourCCOffset(sty, "OTSc");
+    return off >= 0
+      ? { id: "OTSc", offset: off, size: readU32BE(sty, off + 4), full: raw }
+      : undefined;
+  })();
+  const hasOtsc = !!otscChunk && isSubstantialOtsc(otscChunk.full);
 
   const audioChunk = tops.find(
     c => c.id === "AASM" || c.id === "AFil" || c.id === "AWav" || c.id === "AUDI"
@@ -643,10 +732,90 @@ export function validateStyleBytes(sty: Bytes): StyleValidation {
       "No AASM/AFil/AWav/AUDI audio body — OK for MIDI-only styles; Live Audio needs AASM/AFil from .aus."
     );
   }
+  checks.push({
+    id: "audio",
+    label: "Live Audio body (AASM/AFil)",
+    ok: true,
+    detail: hasAudio
+      ? (audioChunk ? `${audioChunk.id} ${audioChunk.size} B` : "present")
+      : "none (MIDI-only OK)"
+  });
 
-  // Order check: CASM should appear before audio when both are top-level walked.
+  // OTSc required when Live Audio present — prevents Style Editor SRJRRR crash
+  if (hasAudio && !hasOtsc) {
+    errors.push(
+      "Missing OTSc after CASM — Style Editor can crash (Unexpected error / SRJRRR L11). " +
+      "Working Live Audio styles use SMF → CASM → OTSc → AASM/AFil."
+    );
+  } else if (hasAudio && otscChunk && !isSubstantialOtsc(otscChunk.full)) {
+    errors.push("OTSc is empty/stub — Style Editor needs a real 4-slot OTS block.");
+  }
+  checks.push({
+    id: "otsc",
+    label: "OTSc (One Touch Setting)",
+    ok: hasAudio ? hasOtsc : true,
+    detail: hasOtsc
+      ? `${otscChunk!.size} B`
+      : hasAudio
+        ? "REQUIRED for Style Editor"
+        : "optional (MIDI-only)"
+  });
+
+  // Order: CASM before OTSc before audio (when all present)
   if (casmChunk && audioChunk && casmChunk.offset > audioChunk.offset) {
     errors.push("Invalid order: audio body appears before CASM.");
+  }
+  if (casmChunk && otscChunk && otscChunk.offset < casmChunk.offset) {
+    errors.push("Invalid order: OTSc appears before CASM.");
+  }
+  if (otscChunk && audioChunk && otscChunk.offset > audioChunk.offset) {
+    errors.push(
+      "Invalid order: OTSc after audio — keyboard Style Editor expects CASM → OTSc → AASM."
+    );
+  }
+  const orderOk =
+    !(casmChunk && audioChunk && casmChunk.offset > audioChunk.offset) &&
+    !(casmChunk && otscChunk && otscChunk.offset < casmChunk.offset) &&
+    !(otscChunk && audioChunk && otscChunk.offset > audioChunk.offset);
+  checks.push({
+    id: "order",
+    label: "Chunk order (CASM → OTSc → audio)",
+    ok: orderOk,
+    detail: tops.map(c => c.id).join(" → ") || "(none)"
+  });
+
+  // Multi-section: SMF markers should cover CASM Sdec (or subset)
+  if (casmSections.length && smfSections.length) {
+    const missing = casmSections.filter(
+      s => !smfSections.some(m => sectionNamesMatch(m, s))
+    );
+    if (missing.length) {
+      warnings.push(
+        `SMF section markers missing vs CASM Sdec: ${missing.slice(0, 6).join(", ")}` +
+        (missing.length > 6 ? "…" : "")
+      );
+    }
+    checks.push({
+      id: "sections",
+      label: "Multi-section map (SMF ↔ CASM)",
+      ok: missing.length === 0,
+      detail: `SMF ${smfSections.length} · CASM ${casmSections.length}`
+    });
+  } else if (casmSections.length) {
+    warnings.push("CASM has Sdec sections but SMF has no section markers.");
+    checks.push({
+      id: "sections",
+      label: "Multi-section map (SMF ↔ CASM)",
+      ok: false,
+      detail: `CASM ${casmSections.length} · SMF 0`
+    });
+  } else {
+    checks.push({
+      id: "sections",
+      label: "Multi-section map (SMF ↔ CASM)",
+      ok: smfSections.length > 0,
+      detail: smfSections.length ? `${smfSections.length} markers` : "none"
+    });
   }
 
   if (casmChunk && casmChunk.size < 40) {
@@ -657,17 +826,18 @@ export function validateStyleBytes(sty: Bytes): StyleValidation {
   }
 
   const mdb = tops.find(c => c.id === "MDB ");
-  const otsc = tops.find(c => c.id === "OTSc");
   if (mdb) warnings.push(`MDB present (${mdb.size} B)`);
-  if (otsc) warnings.push(`OTSc present (${otsc.size} B)`);
 
-  // Expected structure: SMF → CASM → audio [→ MDB] [→ OTSc]
   const structure = tops.map(c => c.id).join(" → ");
   if (tops.length === 0) {
     errors.push("No top-level style chunks found after SMF.");
   } else {
     warnings.push(`Top-level layout: ${structure || "(empty)"}`);
   }
+
+  const layout = hasAudio
+    ? "SMF F0 → CASM → OTSc → AASM/AFil"
+    : "SMF F0 → CASM → [OTSc]";
 
   return {
     ok: errors.length === 0,
@@ -676,8 +846,45 @@ export function validateStyleBytes(sty: Bytes): StyleValidation {
     hasSff2,
     hasSInt,
     hasCasm,
-    hasAudio: hasAudio || !!extractAudioBody(sty)
+    hasAudio: hasAudio || !!extractAudioBody(sty),
+    hasOtsc,
+    smfSections,
+    casmSections,
+    checks,
+    layout
   };
+}
+
+/** Pull FF 06 marker texts from SMF conductor region. */
+export function extractSmfSectionMarkers(smfRegion: Bytes): string[] {
+  const out: string[] = [];
+  const skip = new Set(["SFF1", "SFF2", "SInt"]);
+  for (let i = 0; i < smfRegion.length - 3; i++) {
+    if (smfRegion[i] !== 0xff || smfRegion[i + 1] !== 0x06) continue;
+    // VLQ length
+    let j = i + 2;
+    let len = 0;
+    let b: number;
+    do {
+      if (j >= smfRegion.length) break;
+      b = smfRegion[j++];
+      len = (len << 7) | (b & 0x7f);
+    } while (b & 0x80);
+    if (len <= 0 || len > 64 || j + len > smfRegion.length) continue;
+    const text = new TextDecoder("latin1").decode(smfRegion.subarray(j, j + len)).replace(/\0+$/, "").trim();
+    if (!text || skip.has(text)) continue;
+    if (!out.includes(text)) out.push(text);
+  }
+  return out;
+}
+
+function sectionNamesMatch(smfName: string, casm: StyleSection): boolean {
+  const a = smfName.trim().toLowerCase();
+  const b = yamahaSectionCode(casm).toLowerCase();
+  if (a === b) return true;
+  if (a === "fill in ba" && casm === "Break") return true;
+  if (a === "break" && casm === "Break") return true;
+  return false;
 }
 
 function containsAscii(buf: Bytes, s: string): boolean {

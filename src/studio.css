@@ -1417,6 +1417,72 @@
 .export-ready-dots span.is-on {
   background: #111;
 }
+.export-check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.export-check-list li {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  color: #4b5563;
+}
+.export-check-list li.is-ok .export-check-mark { color: #059669; }
+.export-check-list li.is-bad .export-check-mark { color: #b91c1c; }
+.export-check-mark {
+  font-weight: 700;
+  font-size: 11px;
+}
+.export-check-label { font-weight: 550; color: #111; }
+.export-check-detail {
+  font-size: 10.5px;
+  color: #9ca3af;
+  text-align: right;
+}
+.export-validator {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 160px;
+  overflow: auto;
+}
+.export-validator li {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+.export-validator li.is-ok span { color: #059669; font-weight: 700; }
+.export-validator li.is-bad span { color: #b91c1c; font-weight: 700; }
+.export-validator li.is-bad { background: #fef2f2; }
+.export-validator b { font-weight: 550; color: #111; }
+.export-validator em {
+  font-style: normal;
+  color: #9ca3af;
+  font-size: 10px;
+  text-align: right;
+}
+.export-project-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.export-result-dot.is-fail {
+  background: #b91c1c;
+}
 .export-casm-toggle {
   display: flex;
   gap: 10px;

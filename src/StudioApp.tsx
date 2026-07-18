@@ -37,9 +37,15 @@ import {
   downloadProjectFile,
   hasAnyAutosave,
   loadAutosave,
-  ProjectSnapshot
+  ProjectSnapshot,
+  readProjectFile
 } from "./lib/project/projectStore";
-import { extractCasmFromAus, extractAudioBody } from "./lib/binary/sff2Writer";
+import {
+  extractCasmFromAus,
+  extractAudioBody,
+  extractSectionsFromCasm,
+  FULL_SECTION_LIST
+} from "./lib/binary/sff2Writer";
 import { useInView } from "./hooks/useInView";
 import "./studio.css";
 
@@ -102,6 +108,7 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
   const [exportWarnings, setExportWarnings] = useState<string[]>([]);
   const undoStack = useRef<{ midis: LoadedMidi[]; assignments: Record<number, StyleRole | "unassigned"> }[]>([]);
   const ausBytesRef = useRef<Uint8Array | null>(null);
+  const projectFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const engineRef = useRef<PlaybackEngine | null>(null);
   const [engineTick, setEngineTick] = useState(0);
@@ -174,12 +181,20 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
     ausBytesRef.current = bytes;
     setAusName(name);
     setAusParsed(parsed);
+    // Multi-section map from CASM Sdec (Style Editor needs SMF markers to match)
+    const casm = extractCasmFromAus(bytes);
+    const casmSecs = casm ? extractSectionsFromCasm(casm) : [];
+    const sections = casmSecs.length
+      ? casmSecs
+      : (["Main A", "Main B", "Fill In AA", "Intro A", "Ending A"] as StyleSection[]);
     setMeta(m => ({
       ...m,
       bpm: parsed.meta.bpm,
       timeSigNum: parsed.meta.timeSigNum,
-      timeSigDen: parsed.meta.timeSigDen
+      timeSigDen: parsed.meta.timeSigDen,
+      sections
     }));
+    if (sections[0]) setActiveSection(sections[0]);
     engineRef.current?.setBpm(parsed.meta.bpm);
     const hasAudio =
       parsed.audioChunks.some(c =>
@@ -472,8 +487,11 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
         bankMsb: sound.msb,
         bankLsb: sound.lsb,
         soundName: `${sound.name} (${sound.bank})`,
-        volume: vol != null ? Math.round(vol * 127) : undefined,
-        pan: pan != null ? Math.round(pan * 127) : undefined,
+        // Always write mix CCs so keyboard matches preview (defaults: full / center / light reverb)
+        volume: Math.round((vol ?? 1) * 127),
+        pan: Math.round((pan ?? 0.5) * 127),
+        reverb: 32,
+        chorus: 0,
         section: roleSections[role as StyleRole]
       });
     }
@@ -772,23 +790,41 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
           ? ausBytesRef.current
           : undefined;
 
+      // Align export sections to CASM when available (multi-section map)
+      const casmBytes = ausBytesRef.current
+        ? extractCasmFromAus(ausBytesRef.current)
+        : null;
+      const casmSecs = casmBytes ? extractSectionsFromCasm(casmBytes) : [];
+      const exportSections = dedupeExportSections(
+        casmSecs.length ? casmSecs : sections.length ? sections : FULL_SECTION_LIST
+      );
+
+      // Per-section bar map: mains = AUS bars, fills/break = 1, intro/ending = AUS bars
+      const sectionBarMap: Partial<Record<StyleSection, number>> = {};
+      for (const s of exportSections) {
+        if (s.startsWith("Fill In") || s === "Break") sectionBarMap[s] = 1;
+        else sectionBarMap[s] = bars;
+      }
+
       const built = buildStyle({
         name: meta.name || "AudioStyle",
         category: meta.category,
         bpm: meta.bpm,
         timeSigNum: meta.timeSigNum,
         timeSigDen: meta.timeSigDen,
-        sections,
+        sections: exportSections,
         ticksPerQuarter: tpq,
         sectionBars: bars,
         sectionLengthTicks: loopLenTicks,
+        sectionBarMap,
         aus: ausParsed,
         // Timeline MIDI only when user assigned lanes — never demo ContempRock parts
         tracks: assignedTracks,
         preferAusCasm: true,
         requireAusCasm: requireAusCasm !== false,
         includeMdb: false,
-        includeOtsc: false,
+        // OTSc required — Style Editor crashes (SRJRRR L11) without it on Live Audio
+        includeOtsc: true,
         liftAusSetup: true,
         preservePostSmfFrom: preserveTail,
         blankAusConvert: blankAus,
@@ -796,7 +832,12 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
         forumSafe: studioMode === "aus"
       });
       setResult(built);
-      setExportWarnings(built.validation.warnings);
+      setExportWarnings([
+        ...built.validation.warnings,
+        ...(built.validation.ok
+          ? []
+          : built.validation.errors.map(e => `FAIL: ${e}`))
+      ]);
     } catch (e) {
       setError(`Compile failed: ${(e as Error).message}`);
     }
@@ -855,6 +896,25 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
     setError(null);
     setResult(null);
   }, [applyAusBytes]);
+
+  const saveProject = useCallback(() => {
+    downloadProjectFile(buildSnapshot(), meta.name || "style_project");
+  }, [buildSnapshot, meta.name]);
+
+  const loadProjectClick = useCallback(() => {
+    projectFileInputRef.current?.click();
+  }, []);
+
+  const onProjectFile = useCallback(async (file: File | null) => {
+    if (!file) return;
+    try {
+      const snap = await readProjectFile(file);
+      await restoreSnapshot(snap);
+      setExportWarnings([`Loaded project ${file.name} (${snap.savedAt})`]);
+    } catch (e) {
+      setError(`Project load failed: ${(e as Error).message}`);
+    }
+  }, [restoreSnapshot]);
 
   // Mode-isolated autosave (AUS vs STY never overwrite each other)
   useEffect(() => {
@@ -936,6 +996,13 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
 
   const download = () => {
     if (!result) return;
+    if (!result.validation.ok) {
+      setError(
+        "Download blocked — validator FAIL. Fix errors first (often missing OTSc / CASM). " +
+        result.validation.errors.slice(0, 2).join(" · ")
+      );
+      return;
+    }
     const safe = meta.name.replace(/[^\w\-]+/g, "_") || "audio_style";
     downloadBytes(`${safe}.sty`, result.styBytes, "application/octet-stream");
   };
@@ -985,10 +1052,14 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
 
   const onSectionSelect = useCallback((section: string) => {
     setActiveSection(section);
-    // Toggle section into meta.sections for export
+    // Toggle section in multi-section export map
     const mapped = (section === "Fill In" ? "Fill In AA" : section) as StyleSection;
     setMeta(m => {
-      if (m.sections.includes(mapped)) return m;
+      if (m.sections.includes(mapped)) {
+        // Keep at least Main A
+        if (mapped === "Main A" || m.sections.length <= 1) return m;
+        return { ...m, sections: m.sections.filter(s => s !== mapped) };
+      }
       return { ...m, sections: [...m.sections, mapped] };
     });
   }, []);
@@ -1341,6 +1412,19 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
           <p className="st-section-label">Settings & export</p>
           <div className="st-grid-settings">
             <StyleMetadataForm value={meta} onChange={setMeta} />
+            <input
+              ref={projectFileInputRef}
+              type="file"
+              accept=".yssproj,application/json"
+              className="sr-only"
+              aria-hidden
+              tabIndex={-1}
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                void onProjectFile(f);
+                e.target.value = "";
+              }}
+            />
             <ExportPanel
               ready={canCompile}
               disabled={!canCompile}
@@ -1351,6 +1435,8 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
               warnings={exportWarnings}
               requireAusCasm={requireAusCasm}
               onRequireAusCasmChange={setRequireAusCasm}
+              onSaveProject={saveProject}
+              onLoadProject={loadProjectClick}
               modeLabel={
                 isStyMode
                   ? "STY re-export"
@@ -1366,7 +1452,7 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
                 },
                 {
                   id: "casm",
-                  label: "CASM from AUS",
+                  label: "CASM from source",
                   ok: !!(ausBytesRef.current && extractCasmFromAus(ausBytesRef.current)),
                   detail: requireAusCasm ? "required" : "optional"
                 },
@@ -1380,21 +1466,39 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
                     : !!(ausBytesRef.current && extractAudioBody(ausBytesRef.current))
                 },
                 {
+                  id: "sections",
+                  label: "Multi-section map",
+                  ok: meta.sections.length > 0,
+                  detail: `${meta.sections.length} section(s)`
+                },
+                {
                   id: "parts",
                   label:
                     assignedTracks.length === 0 && !isStyMode
-                      ? "No timeline MIDI"
-                      : "Timeline MIDI (assigned lanes)",
+                      ? "No timeline MIDI (OK)"
+                      : "Timeline MIDI + mix CCs",
                   ok: assignedTracks.length > 0 || isStyMode || hasAusAudioBody,
                   detail:
                     assignedTracks.length === 0 && !isStyMode
-                      ? "optional"
-                      : `${assignedTracks.length} part(s)`
+                      ? "Live Audio only"
+                      : `${assignedTracks.length} part(s) · vol/pan/rvb`
+                },
+                {
+                  id: "otsc",
+                  label: "OTSc (Style Editor)",
+                  ok: true,
+                  detail: "injected on compile"
                 },
                 {
                   id: "meta",
                   label: "Name & tempo set",
                   ok: meta.name.trim().length > 0 && meta.bpm > 0
+                },
+                {
+                  id: "project",
+                  label: "Project save",
+                  ok: true,
+                  detail: "Ctrl+S or Save project"
                 }
               ]}
             />
@@ -1406,9 +1510,20 @@ export function StudioApp({ onBackHome, onOpenDocs }: StudioAppProps) {
           className={`st-footer anim-footer ${footerReveal.inView ? "is-in" : ""}`}
         >
           <div className="anim-footer-col">Private by design · files never leave this device</div>
-          <div className="hex anim-footer-col">SFF2 · SInt · CASM · AASM · AFil</div>
+          <div className="hex anim-footer-col">SFF2 · CASM · OTSc · AASM · AFil</div>
         </footer>
       </main>
     </div>
   );
+}
+
+function dedupeExportSections(sections: StyleSection[]): StyleSection[] {
+  const seen = new Set<string>();
+  const out: StyleSection[] = [];
+  for (const s of sections) {
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out.length ? out : ["Main A"];
 }

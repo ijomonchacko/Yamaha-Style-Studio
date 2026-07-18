@@ -21,8 +21,11 @@ npm run dev
 ```
 SMF Format 0 (SFF2 + SInt [+ optional timeline MIDI only])
 → CASM (from your .aus only)
+→ OTSc (One Touch Setting — required for Style Editor)
 → AASM / AFil (Live Audio from your .aus only)
 ```
+
+**Style Editor crash (Unexpected error / SRJRRR L11):** caused by Live Audio `.sty` files missing `OTSc` after `CASM`. Working factory styles use `CASM → OTSc → AASM`. The exporter always injects a real 4-slot OTSc block.
 
 | Source | Used? |
 |--------|--------|
