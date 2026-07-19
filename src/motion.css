@@ -142,7 +142,6 @@
 .lp-feature-card-anim {
   position: relative;
   overflow: hidden;
-  will-change: transform, opacity, filter;
 }
 .lp-feature-card-icon {
   display: inline-flex;
@@ -174,9 +173,6 @@
 .lp-feature-card-anim:hover .lp-feature-card-shine {
   opacity: 1;
   animation: animCardShine 0.85s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-.lp-community-card-anim {
-  will-change: transform, opacity, filter;
 }
 .lp-feature-visual {
   min-width: 0;

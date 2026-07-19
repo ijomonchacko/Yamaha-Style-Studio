@@ -35,21 +35,25 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html, body, #root { height: 100%; min-height: 100%; }
-
 html {
+  height: auto;
+  min-height: 100%;
   scroll-behavior: smooth;
   transform: none !important;
   filter: none !important;
   perspective: none !important;
   overflow-x: hidden;
+  /* Document is the scrollport so window/useScroll stay in sync */
+  overflow-y: scroll;
 }
 
 body {
   margin: 0;
-  /* Document scroll on html/body — fixed elements stick to viewport */
+  min-height: 100%;
+  height: auto;
+  /* Do not make body a nested scroll container — freezes scroll-linked motion */
   overflow-x: hidden;
-  overflow-y: scroll;
+  overflow-y: visible;
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
@@ -67,6 +71,7 @@ body {
   perspective: none !important;
   position: relative;
   min-height: 100%;
+  height: auto;
   /* Never create a fixed containing block */
   contain: none !important;
   will-change: auto !important;

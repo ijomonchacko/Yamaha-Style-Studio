@@ -113,20 +113,16 @@
   object-position: center center;
 }
 .lp-video {
-  opacity: 0;
-  transition: opacity 0.7s ease;
-  transform: scale(1.04);
-}
-.lp-video-root.is-ready .lp-video {
-  opacity: 1;
+  opacity: 0.62;
+  transform: translateZ(0) scale(1.04);
+  backface-visibility: hidden;
+  /* Instant paint — no fade gate that looks frozen on launch */
+  transition: none;
 }
 .lp-video-dim {
-  opacity: 0 !important;
-  filter: none;
-}
-.lp-video-root.is-ready .lp-video-dim {
   opacity: 0.62 !important;
   filter: contrast(1.06) saturate(1.08);
+  will-change: auto;
 }
 .lp-video-canvas {
   opacity: 1;
@@ -502,7 +498,8 @@
   max-width: 980px;
   margin: 0 auto;
   padding: 7rem 1rem 0;
-  will-change: transform, opacity;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 @media (min-width: 640px) {
   .lp-hero-copy { padding-top: 9rem; padding-left: 1.5rem; padding-right: 1.5rem; }
@@ -990,7 +987,8 @@
   margin: 32px auto 0;
   max-width: 1100px;
   padding: 0 0 180px;
-  will-change: transform;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 @media (min-width: 640px) {
   .lp-mock-wrap { margin-top: 40px; padding-bottom: 220px; }

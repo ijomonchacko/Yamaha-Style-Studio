@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useRef, useState } from "react";
 import { useInView } from "../../hooks/useInView";
 import "../../docs.css";
 
@@ -10,7 +10,6 @@ interface Props {
 type TocItem = {
   id: string;
   label: string;
-  /** Nested under section 4 (a/b/c style) */
   nest?: "child" | "parent";
 };
 
@@ -32,144 +31,163 @@ const TOC: TocItem[] = [
   { id: "troubleshooting", label: "Troubleshooting" }
 ];
 
+const TOC_IDS = TOC.map(t => t.id);
+const NAV_OFFSET = 100;
+
 export function DocsPage({ onHome, onLaunchStudio }: Props) {
-  const [active, setActive] = useState<string>("overview");
+  const [active, setActive] = useState("overview");
   const footerReveal = useInView<HTMLElement>();
-  const tocItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const tocAsideRef = useRef<HTMLElement | null>(null);
+  const tocListRef = useRef<HTMLDivElement | null>(null);
+  const itemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const activeRef = useRef("overview");
+  const lockUntil = useRef(0);
+  const reduceMotion = useRef(false);
 
-  // Track which section is in view — highlight + scroll TOC to match
   useEffect(() => {
-    const ids = TOC.map(t => t.id);
-    const elements = ids
-      .map(id => document.getElementById(id))
-      .filter((el): el is HTMLElement => !!el);
-    if (!elements.length) return;
-
-    const visible = new Map<string, number>();
-    const observer = new IntersectionObserver(
-      entries => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            visible.set(entry.target.id, entry.intersectionRatio);
-          } else {
-            visible.delete(entry.target.id);
-          }
-        }
-        // Prefer the top-most section still intersecting under the nav
-        let bestId = ids[0];
-        let bestTop = Number.POSITIVE_INFINITY;
-        for (const id of ids) {
-          if (!visible.has(id)) continue;
-          const el = document.getElementById(id);
-          if (!el) continue;
-          const top = el.getBoundingClientRect().top;
-          // Sections that have crossed under the fixed nav win
-          if (top <= 140 && top < bestTop) {
-            bestTop = top;
-            bestId = id;
-          }
-        }
-        // Fallback: first visible if none crossed the nav line yet
-        if (bestTop === Number.POSITIVE_INFINITY) {
-          for (const id of ids) {
-            if (visible.has(id)) {
-              bestId = id;
-              break;
-            }
-          }
-        }
-        setActive(prev => (prev === bestId ? prev : bestId));
-      },
-      {
-        root: null,
-        rootMargin: "-80px 0px -55% 0px",
-        threshold: [0, 0.1, 0.25, 0.5, 1]
-      }
-    );
-
-    for (const el of elements) observer.observe(el);
-
-    // Also listen to scroll for immediate updates (IO can lag)
-    const onScroll = () => {
-      let current = ids[0];
-      for (const id of ids) {
-        const el = document.getElementById(id);
-        if (!el) continue;
-        if (el.getBoundingClientRect().top <= 120) current = id;
-      }
-      setActive(prev => (prev === current ? prev : current));
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
-    onScroll();
-
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("scroll", onScroll);
-      document.removeEventListener("scroll", onScroll, true);
-    };
+    reduceMotion.current =
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }, []);
 
-  // Keep active TOC item visible inside the sticky sidebar
-  useEffect(() => {
-    const btn = tocItemRefs.current[active];
-    const aside = tocAsideRef.current;
-    if (!btn || !aside) return;
-    const btnTop = btn.offsetTop;
-    const btnBottom = btnTop + btn.offsetHeight;
-    const viewTop = aside.scrollTop;
-    const viewBottom = viewTop + aside.clientHeight;
-    if (btnTop < viewTop + 8) {
-      aside.scrollTo({ top: Math.max(0, btnTop - 24), behavior: "smooth" });
-    } else if (btnBottom > viewBottom - 8) {
-      aside.scrollTo({ top: btnBottom - aside.clientHeight + 24, behavior: "smooth" });
+  const scrollGuideTo = useCallback((id: string) => {
+    const list = tocListRef.current;
+    const btn = itemRefs.current[id];
+    if (!list || !btn) return;
+
+    const mobile = window.matchMedia("(max-width: 960px)").matches;
+    const behavior: ScrollBehavior = reduceMotion.current ? "auto" : "smooth";
+
+    if (mobile) {
+      const left = btn.offsetLeft - list.clientWidth / 2 + btn.offsetWidth / 2;
+      list.scrollTo({ left: Math.max(0, left), behavior });
+      return;
     }
-  }, [active]);
+
+    const top = btn.offsetTop - list.clientHeight / 2 + btn.offsetHeight / 2;
+    const max = Math.max(0, list.scrollHeight - list.clientHeight);
+    list.scrollTo({ top: Math.max(0, Math.min(max, top)), behavior });
+  }, []);
+
+  const setActiveSection = useCallback(
+    (id: string) => {
+      if (id === activeRef.current) return;
+      activeRef.current = id;
+      setActive(id);
+      scrollGuideTo(id);
+    },
+    [scrollGuideTo]
+  );
+
+  // Scroll-spy: active Guide item follows the article section under the nav
+  useEffect(() => {
+    let raf = 0;
+
+    const update = () => {
+      if (performance.now() < lockUntil.current) return;
+
+      const y =
+        window.scrollY ||
+        document.documentElement.scrollTop ||
+        document.body.scrollTop ||
+        0;
+
+      const marker = NAV_OFFSET + 24;
+      let current = TOC_IDS[0];
+
+      for (const id of TOC_IDS) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        const top = el.getBoundingClientRect().top;
+        if (top <= marker) current = id;
+      }
+
+      const maxScroll =
+        Math.max(
+          document.documentElement.scrollHeight,
+          document.body.scrollHeight
+        ) - window.innerHeight;
+
+      if (maxScroll > 80 && y >= maxScroll - 32) {
+        current = TOC_IDS[TOC_IDS.length - 1];
+      }
+
+      setActiveSection(current);
+    };
+
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(update);
+    };
+
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onScroll);
+      document.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [setActiveSection]);
 
   const scrollTo = (id: string) => {
-    setActive(id);
     const el = document.getElementById(id);
     if (!el) return;
-    const y = el.getBoundingClientRect().top + window.scrollY - 88;
-    window.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
+
+    lockUntil.current = performance.now() + 800;
+    activeRef.current = id;
+    setActive(id);
+    scrollGuideTo(id);
+
+    const top =
+      el.getBoundingClientRect().top +
+      (window.scrollY || document.documentElement.scrollTop || 0) -
+      NAV_OFFSET;
+
+    window.scrollTo({
+      top: Math.max(0, top),
+      behavior: reduceMotion.current ? "auto" : "smooth"
+    });
   };
 
   return (
     <div className="docs-root">
-      {/* SiteNav is rendered by App (fixed portal) */}
-      <div className="docs-layout sn-page-pad">
-        <aside ref={tocAsideRef} className="docs-toc" aria-label="Guide sections">
-          <div className="docs-toc-title">Guide</div>
+      {/* Fixed left Guide — never scrolls away with the page */}
+      <aside className="docs-toc" aria-label="Guide sections">
+        <div className="docs-toc-title">Guide</div>
+        <div ref={tocListRef} className="docs-toc-list">
           {TOC.map(item => (
             <button
               key={item.id}
               type="button"
               ref={el => {
-                tocItemRefs.current[item.id] = el;
+                itemRefs.current[item.id] = el;
               }}
               className={[
                 "docs-toc-item",
                 active === item.id ? "on" : "",
                 item.nest === "child" ? "nested" : "",
                 item.nest === "parent" ? "parent" : ""
-              ].filter(Boolean).join(" ")}
+              ]
+                .filter(Boolean)
+                .join(" ")}
+              aria-current={active === item.id ? "true" : undefined}
               onClick={() => scrollTo(item.id)}
             >
               {item.nest === "child" && <span className="docs-toc-bullet" aria-hidden />}
               <span>{item.label}</span>
             </button>
           ))}
-          <button type="button" className="docs-btn docs-btn-solid docs-toc-cta" onClick={onLaunchStudio}>
-            Launch Studio
-          </button>
-        </aside>
+        </div>
+      </aside>
 
+      <div className="docs-main">
         <article className="docs-content">
           <header className="docs-hero">
-            <p className="docs-kicker anim-page-kicker">Documentation</p>
-            <h1 className="anim-page-title">From song file to Yamaha Live Audio Style</h1>
-            <p className="docs-lead anim-page-lead">
+            <p className="docs-kicker">Documentation</p>
+            <h1>From song file to Yamaha Live Audio Style</h1>
+            <p className="docs-lead">
               A complete workflow: isolate drums &amp; percussion with <strong>iZotope RX 12</strong>,
               build a Live Audio Style in <strong>Yamaha Audio Phraser</strong>, then finish MIDI parts
               and export a keyboard-ready <strong>.sty</strong> in Yamaha Style Studio.
@@ -717,8 +735,12 @@ export function DocsPage({ onHome, onLaunchStudio }: Props) {
           >
             <p className="anim-footer-col">Ready to build?</p>
             <div className="docs-end-actions anim-footer-col">
-              <button type="button" className="docs-btn docs-btn-solid" onClick={onLaunchStudio}>Launch Studio</button>
-              <button type="button" className="docs-btn docs-btn-ghost" onClick={onHome}>Go to Home</button>
+              <button type="button" className="docs-btn docs-btn-solid" onClick={onLaunchStudio}>
+                Launch Studio
+              </button>
+              <button type="button" className="docs-btn docs-btn-ghost" onClick={onHome}>
+                Go to Home
+              </button>
             </div>
           </footer>
         </article>

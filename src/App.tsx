@@ -33,7 +33,10 @@ function scrollToId(id: string) {
     window.scrollTo({ top: 0, behavior: "smooth" });
     return;
   }
-  document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const el = document.getElementById(id);
+  if (!el) return;
+  const y = el.getBoundingClientRect().top + window.scrollY - 96;
+  window.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
 }
 
 /**

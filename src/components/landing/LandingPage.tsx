@@ -47,12 +47,11 @@ function FadeUp({
 }
 
 const cardVariants = {
-  hidden: { opacity: 0, y: 36, scale: 0.96, filter: "blur(6px)" },
+  hidden: { opacity: 0, y: 28, scale: 0.98 },
   show: (i: number) => ({
     opacity: 1,
     y: 0,
     scale: 1,
-    filter: "blur(0px)",
     transition: {
       duration: 0.65,
       delay: 0.06 + i * 0.08,
@@ -140,9 +139,9 @@ export function LandingPage({ onLaunchStudio, onOpenDocs }: Props) {
     offset: ["start start", "end start"]
   });
 
-  // Parallax only on hero children — never on ancestors of the fixed nav
-  const dashboardY = useTransform(scrollYProgress, [0, 1], reduce ? ["0%", "0%"] : ["0%", "-12%"]);
-  const contentY = useTransform(scrollYProgress, [0, 1], reduce ? ["0%", "0%"] : ["0%", "-30%"]);
+  // Pixel parallax on hero children only — % y + blur caused freeze/jank on scroll
+  const dashboardY = useTransform(scrollYProgress, [0, 1], reduce ? [0, 0] : [0, -72]);
+  const contentY = useTransform(scrollYProgress, [0, 1], reduce ? [0, 0] : [0, -120]);
   const contentOpacity = useTransform(scrollYProgress, [0, 0.55], reduce ? [1, 1] : [1, 0]);
 
   const scrollTo = (id: string) => {

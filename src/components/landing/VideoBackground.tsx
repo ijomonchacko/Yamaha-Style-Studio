@@ -1,23 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 /** Hero background from current landing prompt (Taskora-style dark SaaS). */
 export const HERO_VIDEO =
   "https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260201_052917_7fc4e418-3123-40bf-b5ba-394c28eb4b3a.mp4";
 
 /**
- * Full-bleed hero video — muted loop, ~50% opacity, gradient into #050505.
+ * Full-bleed hero video — muted loop, instant paint (no fade gate).
  */
 export function VideoBackground() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     let disposed = false;
-    let tries = 0;
     let retryTimer = 0;
+    let tries = 0;
 
     video.muted = true;
     video.defaultMuted = true;
@@ -29,64 +28,62 @@ export function VideoBackground() {
     video.setAttribute("playsinline", "");
     video.setAttribute("autoplay", "");
 
-    if (!video.src || !video.src.includes("hf_20260201")) {
+    if (!video.getAttribute("src") && !video.currentSrc) {
       video.src = HERO_VIDEO;
     }
 
-    const tryPlay = async () => {
+    const tryPlay = () => {
       if (disposed || !video) return;
-      try {
-        video.muted = true;
-        video.volume = 0;
-        if (video.paused) {
-          const p = video.play();
-          if (p !== undefined) await p;
-        }
-        if (!disposed) setReady(true);
-      } catch {
-        if (disposed) return;
-        tries += 1;
-        if (tries < 12) {
-          retryTimer = window.setTimeout(() => void tryPlay(), 300 * tries);
-        }
+      video.muted = true;
+      video.volume = 0;
+      if (!video.paused) return;
+      const p = video.play();
+      if (p !== undefined) {
+        void p.catch(() => {
+          if (disposed) return;
+          tries += 1;
+          if (tries < 8) {
+            retryTimer = window.setTimeout(tryPlay, 200 * tries);
+          }
+        });
       }
     };
 
-    const onReady = () => void tryPlay();
-    video.addEventListener("loadeddata", onReady);
-    video.addEventListener("canplay", onReady);
-    video.addEventListener("playing", () => setReady(true));
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") void tryPlay();
-    });
-    document.addEventListener("pointerdown", () => void tryPlay(), { once: true, passive: true });
+    const onVis = () => {
+      if (document.visibilityState === "visible") tryPlay();
+    };
 
-    void tryPlay();
-    retryTimer = window.setTimeout(() => void tryPlay(), 400);
+    video.addEventListener("loadeddata", tryPlay);
+    video.addEventListener("canplay", tryPlay);
+    document.addEventListener("visibilitychange", onVis);
+    document.addEventListener("pointerdown", tryPlay, { once: true, passive: true });
+
+    tryPlay();
+    if (video.readyState < 2) video.load();
 
     return () => {
       disposed = true;
       window.clearTimeout(retryTimer);
-      video.removeEventListener("loadeddata", onReady);
-      video.removeEventListener("canplay", onReady);
+      video.removeEventListener("loadeddata", tryPlay);
+      video.removeEventListener("canplay", tryPlay);
+      document.removeEventListener("visibilitychange", onVis);
     };
   }, []);
 
   return (
-    <div className={`lp-video-root ${ready ? "is-ready" : ""}`} aria-hidden>
+    <div className="lp-video-root is-ready" aria-hidden>
       <div className="lp-video-underlay lp-video-underlay-dark" />
       <video
         ref={videoRef}
         className="lp-video lp-video-dim"
+        src={HERO_VIDEO}
         muted
         autoPlay
         loop
         playsInline
         preload="auto"
         disablePictureInPicture
-      >
-        <source src={HERO_VIDEO} type="video/mp4" />
-      </video>
+      />
       <div className="lp-video-scrim lp-video-scrim-dark" />
     </div>
   );
